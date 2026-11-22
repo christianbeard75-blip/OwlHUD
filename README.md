@@ -2,7 +2,7 @@
 
 A talking owl companion for **World of Warcraft: Forever**. He sits on your screen, watches what you do, remembers it, and helps. He has a wardrobe, goals of his own, and he knows your friends' owls.
 
-**Current version: 3.4**
+**Current version: 3.6**
 
 ## Get it
 
@@ -32,7 +32,26 @@ Whenever there is a new version:
 
 That is all. It fetches the newest version from this page and puts it in the right place.
 
-## What is new in 3.4
+## What is new in 3.6
+
+- **Entrances.** Owls swoop, drop, pop, roll or peek their way onto the branch, and fly off when their player leaves. `/owl enter` replays it.
+- **One branch.** Your friends' owls sit along one branch beside yours. `/owl branch` puts them back in a column.
+- **Their own speech bubbles.** A friend's owl talks from its own bubble, and the others turn to look.
+- **A new bubble style.** A soft dark box with white letters that write themselves out. `/owl bubble` switches styles.
+- **Bigger wings, and they hold things.** In the rain every owl holds an umbrella in its wing. `/owl rain` shows it off.
+- **At a glance.** Class-coloured names and scarves, a level badge, a helmet in dungeons, asleep when their player is away.
+- **Point at an owl** to see who it is. Click to whisper, right-click to invite.
+- **Personality.** `/owl catchphrase Fear the beak` sets what your owl says when it lands. `/owl nick` shows what yours calls your friends.
+
+## Earlier, in 3.5
+
+- **Dungeon awards.** When a run ends, every owl in the group hands out the same awards: Floor Inspector for the most deaths, Closest Shave, Finisher, Untouchable. Type `/owl awards` to call them yourself.
+- **He sizes you up.** The first time he meets you, he looks your character over and gives his verdict. `/owl reading` to hear it again.
+- **Owls talk to each other.** Group up with a friend and your owls trade a line. You both see the same exchange.
+- **Recap when you log off:** time played, kills, deaths, levels, gold, and who got you. `/owl recap` any time.
+- **Battle.net friends count now.** A friend's owl sits beside yours whenever they are online, grouped or not, even if you only know them through Battle.net.
+
+## Earlier, in 3.4
 
 - **Friends' owls** sit in a tidy column beside yours, stay there whenever your friends are online, and react: they talk, cheer, slump when their player dies, and fly over to visit.
 - **In a dungeon** the owls line up on one branch together, and yours remembers how long the last run took.
@@ -47,6 +66,11 @@ That is all. It fetches the newest version from this page and puts it in the rig
 | Type this | What it does |
 | --- | --- |
 | `/owl` | Everything he can do |
+| `/owl enter` | Replay the entrances |
+| `/owl catchphrase` | What your owl says when it lands |
+| `/owl nick` | What he calls your friends |
+| `/owl awards` | Dungeon awards for your group, right now |
+| `/owl recap` | This session so far |
 | `/owl weather` | The weather now and his notes for this zone |
 | `/owl pvp` | Who has killed you, and who you have beaten |
 | `/owl signals` | Words over his head instead of repeated reminders, on or off |

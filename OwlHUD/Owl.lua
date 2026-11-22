@@ -65,7 +65,7 @@ do
         if ok and type(info) == "table" then
           local name = Plain(info.name)
           if type(name) == "string" and name ~= "" then
-            out[#out + 1] = { name = name, connected = Plain(info.connected) and true or false, level = tonumber(Plain(info.level)), area = Plain(info.area) }
+            out[#out + 1] = { name = name, connected = Plain(info.connected) and true or false, level = tonumber(Plain(info.level)), area = Plain(info.area), class = Plain(info.className), afk = Plain(info.afk) and true or false }
           end
         end
       end
@@ -82,7 +82,7 @@ do
             local char, client, project = Plain(g.characterName), Plain(g.clientProgram), Plain(g.wowProjectID)
             local same = type(project) ~= "number" or type(_G.WOW_PROJECT_ID) ~= "number" or project == _G.WOW_PROJECT_ID
             if type(char) == "string" and char ~= "" and client == "WoW" and Plain(g.isOnline) and same then
-              out[#out + 1] = { name = char, connected = true, level = tonumber(Plain(g.characterLevel)), area = Plain(g.areaName), bnet = true }
+              out[#out + 1] = { name = char, connected = true, level = tonumber(Plain(g.characterLevel)), area = Plain(g.areaName), bnet = true, class = Plain(g.className), afk = Plain(g.isGameAFK) and true or false }
             end
           end
         end
@@ -897,6 +897,7 @@ O.On("CHAT_MSG_SYSTEM", function(msg)
   local who = msg:match("%[([^%]]+)%]") or msg:match("^(%S+) has come online")
   if type(who) ~= "string" or who == "" then return end
   who = who:gsub("%-.*$", "")
+  if Owl.Nick then local okN, nick = pcall(Owl.Nick, who) if okN and type(nick) == "string" then who = nick end end
   Say("friend" .. who, { who .. " just came online.", "Look who it is: " .. who .. " is on.", who .. " is here. Say hello." }, 300)
 end)
 
@@ -4354,7 +4355,7 @@ tail:SetTexture("Interface\\AddOns\\OwlHUD\\Media\\bubble_tail.tga")
 tail:SetSize(13, 18)
 tail:SetPoint("RIGHT", pal.bubble, "LEFT", 2, 0)
 local function ApplyBubble()
-  local parchment = OwlHUDDB.bubble ~= "dark"
+  local parchment = OwlHUDDB.bubble ~= "dark" and OwlHUDDB.bubble ~= "dusk"
   if parchment then
     pal.bubble.bg:SetColorTexture(0.93, 0.86, 0.70, 0.97)
     pal.text:SetTextColor(0.17, 0.10, 0.04)
@@ -4381,7 +4382,9 @@ local function ApplyBubble()
   end
   local ok, shown = pcall(tail.GetTexture, tail)
   if parchment and ok and shown ~= nil then tail:Show() else tail:Hide() end
+  if Owl.stage and Owl.stage.Dusk then pcall(Owl.stage.Dusk, OwlHUDDB.bubble == "dusk") end
 end
+Owl.ApplyBubble = ApplyBubble
 O.defaults.textSize = 16
 O.commands.text = function(arg)
   local n = tonumber(arg)
@@ -4391,7 +4394,8 @@ O.commands.text = function(arg)
   O.Print("owl text size: " .. OwlHUDDB.textSize)
 end
 O.commands.bubble = function()
-  OwlHUDDB.bubble = OwlHUDDB.bubble == "dark" and "parchment" or "dark"
+  local now = OwlHUDDB.bubble
+  OwlHUDDB.bubble = (now == "dusk" and "parchment") or (now == "dark" and "dusk") or "dark"
   ApplyBubble()
   O.Print("speech bubble: " .. OwlHUDDB.bubble)
 end
@@ -7875,7 +7879,7 @@ local function FriendHop(who, word, act)
     if f and f.who == who then
       f.hop = 1
       if act then f.hop, f.act, f.actT, f.actDur = 0, act, 0, (act == "cheer" and 1.8 or 1.4) end
-      if word then f.emote:SetText(word) f.emote:Show() f.emoteUntil = Now() + 2.5 end
+      if word and not (Owl.stage and Owl.stage.Bubble and Owl.stage.Bubble(f, word, 2.5)) then f.emote:SetText(word) f.emote:Show() f.emoteUntil = Now() + 2.5 end
     end
   end
 end
@@ -7958,6 +7962,7 @@ local function SeekFriends()
 end
 -- an owl stays beside yours while its player is in your group or shows as online; a friend who is not on your
 -- friends list stays while their owl keeps in touch
+local dropAt = 15
 local function DropFriends()
   if Q("IsInRaid") then return end
   pcall(SeekFriends)
@@ -7972,14 +7977,19 @@ local function DropFriends()
       stay = listed == true or (listed == nil and Now() - (data.at or 0) < 330)
     end
     if data then data.far = not keep[who] end
-    if not stay then
+    if stay then
+      if data then data.leaving = nil end
+    elseif data and Owl.stage and not data.leaving then
+      -- it flies off before it is gone
+      data.leaving = Now()
+      dropAt = Now() + 1.3
+    elseif not data or not data.leaving or Now() - data.leaving >= 1.1 then
       friends[who] = nil
       table.remove(friendOrder, i)
-    end
+    else dropAt = Now() + 0.5 end
   end
   LayoutFriends()
 end
-local dropAt = 15
 O.On("GROUP_ROSTER_UPDATE", function() dropAt = Now() + 1.5 sendLookAt = Now() + 4 end)
 local netBefore = Owl.onNet
 local lookReplyAt = -100
@@ -8069,7 +8079,7 @@ local function FriendDead(who, data)
   if data.dead and Now() - data.dead > 240 then data.dead = nil end
   return data.dead ~= nil
 end
-local FRIEND_LAYERS = { "owl", "crest", "mark", "cloak", "neck", "extra", "gem", "hat" }
+local FRIEND_LAYERS = { "owl", "crest", "mark", "cloak", "neck", "extra", "gem", "hat", "scarf", "wing" }
 local function SpinFriend(f, r)
   for _, slot in ipairs(FRIEND_LAYERS) do
     local tex = f.stack[slot]
@@ -8158,9 +8168,13 @@ local function PlaceFriend(f, i, w, colDown, e)
       end
     end
   end
+  if Owl.stage and Owl.stage.Offset then
+    local okS, ox, oy = pcall(Owl.stage.Offset, f, i, size, e)
+    if okS and type(ox) == "number" and type(oy) == "number" then vx, vy = vx + ox, vy + oy end
+  end
   f:SetSize(size, size)
   f:ClearAllPoints()
-  if row then f:SetPoint("BOTTOMRIGHT", perchFrame, "BOTTOMLEFT", 2 - (i - 1) * size * 0.9, 0)
+  if row then f:SetPoint("BOTTOMRIGHT", perchFrame, "BOTTOMLEFT", 2 - (i - 1) * size * 0.9 + vx, vy)
   elseif colDown then f:SetPoint("TOPRIGHT", perchFrame, "TOPLEFT", -8 + vx, -step + vy)
   else f:SetPoint("BOTTOMRIGHT", perchFrame, "BOTTOMLEFT", -8 + vx, step + vy) end
   return size
@@ -8170,7 +8184,8 @@ local function FriendScene(now, fancy)
   if now >= (slots.rowAt or 0) then
     slots.rowAt = now + 2
     local inside, kind = Q("IsInInstance")
-    local row = (inside and kind == "party") and true or false
+    local row = ((inside and kind == "party") or OwlHUDDB.friendColumn ~= true) and true or false
+    slots.inside = (inside and kind == "party") and true or false
     if row ~= (slots.row or false) then slots.row = row LayoutFriends() end
   end
   if not slots.visitAt then slots.visitAt = now + 90 + math.random() * 120 end
@@ -8251,6 +8266,31 @@ local function Motion(e, dozing, dead)
     elseif idle.kind == "bow" then
       local k = math.sin(p * math.pi)
       dy, r, sy = -0.04 * k, -0.22 * k, sy - 0.06 * k
+    elseif idle.kind == "dropin" then
+      -- falls onto his perch and bounces
+      if p < 0.55 then local q = p / 0.55 dy = (1 - q * q) * 1.7
+      else local q = (p - 0.55) / 0.45 dy = math.sin(q * math.pi) * 0.14 * (1 - q) sy = sy - 0.1 * math.max(0, 1 - q * 4) sx = sx + 0.08 * math.max(0, 1 - q * 4) end
+    elseif idle.kind == "popin" then
+      -- out of nowhere, spinning, a little too big, then settles
+      local k = p < 0.6 and (p / 0.6) * 1.2 or 1.2 - (p - 0.6) / 0.4 * 0.2
+      sx, sy = k, k
+      r = (1 - p) * (1 - p) * math.pi * 2
+    elseif idle.kind == "rollin" then
+      -- tumbles in along the branch
+      local q = 1 - p
+      dx = -q * q * 1.9
+      r = -dx * 3.2
+      dy = math.abs(math.sin(p * math.pi * 3)) * 0.07 * q
+    elseif idle.kind == "swoopin" then
+      local ease = p * p * (3 - 2 * p)
+      dx = -(1 - ease) * 2.1
+      dy = (1 - ease) * 0.9 + math.sin(p * math.pi) * 0.3
+      r = (1 - ease) * 0.25
+    elseif idle.kind == "peekin" then
+      -- comes up from below, stops to look, then hops up
+      if p < 0.35 then dy = -1 + (p / 0.35) * 0.55
+      elseif p < 0.7 then dy = -0.45
+      else local q = (p - 0.7) / 0.3 dy = -0.45 * (1 - q) + math.sin(q * math.pi) * 0.18 end
     elseif idle.kind == "startle" then
       dy = math.sin(p * math.pi) * 0.12
       sy = sy + 0.08 * math.sin(p * math.pi)
@@ -8407,12 +8447,15 @@ local function LiveStep(e)
           elseif f.act == "cheer" then hop = hop + math.abs(math.sin(p * math.pi * 5)) * 0.2 * (1 - p * 0.4)
           elseif f.act == "tilt" then rot = math.sin(p * math.pi) * 0.16
           elseif f.act == "wiggle" then rot = math.sin(p * math.pi * 4) * 0.08 * (1 - p) end
-        elseif fancy and not f.visit and f.t >= (f.idleAt or 6) then
-          local pick = math.random(3)
-          if pick == 1 then f.hop = 1 else f.act, f.actT, f.actDur = (pick == 2 and "tilt" or "wiggle"), 0, 1.3 end
+        elseif fancy and not f.visit and not f.busy and f.t >= (f.idleAt or 6) then
+          local pick = math.random(5)
+          if pick == 1 then f.hop = 1
+          elseif pick >= 4 and Owl.stage and Owl.stage.Glance then pcall(Owl.stage.Glance, f, pick == 4 and "owl_left.tga" or "owl_right.tga", 1.2)
+          else f.act, f.actT, f.actDur = (pick == 2 and "tilt" or "wiggle"), 0, 1.3 end
           f.idleAt = f.t + 8 + math.random() * 14
         end
         if not down then
+          rot = rot + (f.spin or 0)
           local rk = math.floor(rot * 200 + 0.5)
           if rk ~= (f.rotKey or 0) then f.rotKey = rk SpinFriend(f, rot) end
         end
@@ -8423,11 +8466,12 @@ local function LiveStep(e)
           f.stack.owl:SetPoint("BOTTOM", f, "BOTTOM", 0, -size * 0.05)
           f.stack.owl:SetSize(size * 1.04, size * 0.9)
         else
+          local pop = f.pop or 1
           f.stack.owl:SetPoint("BOTTOM", f, "BOTTOM", 0, hop * size)
-          f.stack.owl:SetSize(size * (1 - b * 0.4), size * (1 + b))
+          f.stack.owl:SetSize(size * (1 - b * 0.4) * pop, size * (1 + b) * pop)
         end
         f.stack.aura:SetSize(size * 1.25, size * 1.25)
-        if not down and not f.visit and f.t >= f.blinkAt then
+        if not down and not f.visit and not f.busy and f.t >= f.blinkAt then
           local want = f.face == "owl_blink.tga" and (f.low and "owl_worried.tga" or "owl.tga") or "owl_blink.tga"
           f.face = want
           f.stack.face = want
@@ -11556,6 +11600,7 @@ local function Banter(sender, owl)
   local pair = BANTER[h % #BANTER + 1]
   local theirs = tostring(owl)
   local function they(text)
+    if Owl.stage and Owl.stage.Speak and Owl.stage.Speak(sender, text, 4) then return end
     Say("banter" .. sender .. Now(), theirs .. " says: \"" .. text .. "\"", 0, "c")
     if Owl.cos and Owl.cos.Hop then pcall(Owl.cos.Hop, sender, "...", "talk") end
   end
@@ -11664,4 +11709,685 @@ Owl.probe.friends = function()
   return "listed=" .. total .. " online=" .. online .. " viaBattleNet=" .. bnet .. " onlineWithOwl[" .. table.concat(known, ",") .. "] owlsBeside=" .. beside
     .. " BNGetNumFriends:" .. type(_G.BNGetNumFriends) .. " C_BattleNet:" .. type(_G.C_BattleNet)
 end
+end
+
+-- =====================================================================================
+-- The stage: owls that arrive with a flourish, speak from their own bubbles, hold things in their wings,
+-- wear their player's colours, and can be pointed at to see who they are.
+-- =====================================================================================
+do
+local stage = {}
+Owl.stage = stage
+local cos = Owl.cos
+local slots, friends = cos.slots, cos.friends
+local perch = _G.OwlHUDPerch
+local function Call0(obj, method, ...)
+  if obj and obj[method] then local ok, a, b = pcall(obj[method], obj, ...) if ok then return a, b end end
+  return nil
+end
+local function PlumeOf(f) return f.stack and f.stack.body and f.stack.body.p or nil end
+local function PlumeFile(name, p)
+  if type(p) == "number" and p > 1 and p <= 10 then return MEDIA .. "p" .. p .. "_" .. name end
+  return MEDIA .. name
+end
+local function Face(f, name, secs)
+  f.face, f.stack.face = name, name
+  f.stack.owl:SetTexture(MEDIA .. cos.OwlFile(name, PlumeOf(f)))
+  if secs then f.blinkAt = f.t + secs end
+end
+local function Calm(f) return (f.wasDead and "owl_blink.tga") or (f.low and "owl_worried.tga") or "owl.tga" end
+stage.Glance = function(f, name, secs)
+  if f.wasDead or f.low or f.visit or f.busy or f.napping then return end
+  Face(f, name, secs or 1.2)
+end
+
+-- ---------- a rounded panel, for the dusk bubble ----------
+local CORNER = 7
+local function Panel(frame, layer)
+  local p = { parts = {}, bars = {} }
+  local function Corner(point, u0, u1, v0, v1)
+    local t = frame:CreateTexture(nil, layer or "BACKGROUND")
+    t:SetTexture(MEDIA .. "corner.tga")
+    t:SetSize(CORNER, CORNER)
+    t:SetPoint(point, frame, point, 0, 0)
+    if t.SetTexCoord then t:SetTexCoord(u0, u1, v0, v1) end
+    p.parts[#p.parts + 1] = t
+  end
+  Corner("TOPLEFT", 0, 1, 0, 1) Corner("TOPRIGHT", 1, 0, 0, 1) Corner("BOTTOMLEFT", 0, 1, 1, 0) Corner("BOTTOMRIGHT", 1, 0, 1, 0)
+  local function Bar(a, ax, ay, b, bx, by)
+    local t = frame:CreateTexture(nil, layer or "BACKGROUND")
+    t:SetPoint("TOPLEFT", frame, a, ax, ay)
+    t:SetPoint("BOTTOMRIGHT", frame, b, bx, by)
+    p.bars[#p.bars + 1] = t
+  end
+  Bar("TOPLEFT", CORNER, 0, "TOPRIGHT", -CORNER, -CORNER)
+  Bar("TOPLEFT", 0, -CORNER, "BOTTOMRIGHT", 0, CORNER)
+  Bar("BOTTOMLEFT", CORNER, CORNER, "BOTTOMRIGHT", -CORNER, 0)
+  p.Color = function(r, g, b, a)
+    for _, t in ipairs(p.parts) do if t.SetVertexColor then t:SetVertexColor(r, g, b, a) end end
+    for _, t in ipairs(p.bars) do t:SetColorTexture(r, g, b, a) end
+  end
+  p.Shown = function(on)
+    for _, t in ipairs(p.parts) do if on then t:Show() else t:Hide() end end
+    for _, t in ipairs(p.bars) do if on then t:Show() else t:Hide() end end
+  end
+  return p
+end
+local STYLE = {
+  parchment = { 0.93, 0.86, 0.70, 0.97, 0.17, 0.10, 0.04 },
+  dark = { 0.05, 0.04, 0.02, 0.9, 1, 1, 1 },
+  dusk = { 0.0, 0.02, 0.09, 0.74, 1, 1, 1 },
+}
+local function Style() return STYLE[OwlHUDDB.bubble or ""] or STYLE.parchment end
+
+-- his own bubble in the dusk style: a soft dark box, white letters, and a small blinking mark when he has finished
+local duskPanel, nextMark, markT, lastText, stillFor = nil, nil, 0, nil, 0
+stage.Dusk = function(on)
+  local bubble = pal and pal.bubble
+  if not bubble then return end
+  if on and not duskPanel then
+    duskPanel = Panel(bubble, "BACKGROUND")
+    nextMark = bubble:CreateTexture(nil, "OVERLAY")
+    nextMark:SetTexture(MEDIA .. "next.tga")
+    nextMark:SetSize(11, 11)
+    nextMark:SetPoint("BOTTOMRIGHT", bubble, "BOTTOMRIGHT", -7, 5)
+    if nextMark.SetVertexColor then nextMark:SetVertexColor(0.45, 0.75, 1, 1) end
+    nextMark:Hide()
+  end
+  if duskPanel then
+    duskPanel.Shown(on)
+    if on then duskPanel.Color(STYLE.dusk[1], STYLE.dusk[2], STYLE.dusk[3], STYLE.dusk[4]) end
+  end
+  if nextMark and not on then nextMark:Hide() end
+  if on then
+    bubble.bg:SetColorTexture(0, 0, 0, 0)
+    if pal.name then pal.name:SetTextColor(0.55, 0.8, 1) end
+  end
+  for _, line in ipairs(bubble.lines or {}) do if on then line:Hide() else line:Show() end end
+end
+-- once, the dusk bubble becomes the one he uses (he can change it back with /owl bubble)
+O.On("PLAYER_LOGIN", function()
+  if not OwlHUDDB.duskOffered then
+    OwlHUDDB.duskOffered = true
+    OwlHUDDB.bubble = "dusk"
+    if Owl.ApplyBubble then pcall(Owl.ApplyBubble) end
+  end
+end)
+
+-- ---------- a friend's owl speaks from its own bubble ----------
+local function MakeBubble(f)
+  local b = CreateFrame("Frame", nil, f)
+  if b.SetFrameStrata then b:SetFrameStrata("HIGH") end
+  b.panel = Panel(b, "BACKGROUND")
+  b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  b.text:SetPoint("CENTER", b, "CENTER", 0, 0)
+  if b.text.SetJustifyH then b.text:SetJustifyH("LEFT") end
+  b.tail = b:CreateTexture(nil, "ARTWORK")
+  b.tail:SetTexture(MEDIA .. "bubble_tail.tga")
+  b.tail:SetSize(9, 12)
+  b:Hide()
+  f.bub = b
+  return b
+end
+stage.Bubble = function(f, text, secs)
+  if type(text) ~= "string" or text == "" or not f:IsShown() then return false end
+  local b = f.bub or MakeBubble(f)
+  local st = Style()
+  b.panel.Color(st[1], st[2], st[3], st[4])
+  b.text:SetTextColor(st[5], st[6], st[7])
+  local dark = st[5] == 1
+  if b.text.SetShadowColor then b.text:SetShadowColor(0, 0, 0, dark and 1 or 0) end
+  if b.text.SetShadowOffset then b.text:SetShadowOffset(dark and 1 or 0, dark and -1 or 0) end
+  local plain = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+  local wide = #plain > 28
+  b.text:SetWidth(wide and 168 or 0)
+  b.text:SetText(text)
+  local tw = Num(Call0(b.text, "GetStringWidth")) or (#plain * 6)
+  local th = Num(Call0(b.text, "GetStringHeight")) or 12
+  if wide then tw = 168 end
+  b:SetSize(math.max(26, tw + 16), math.max(20, th + 12))
+  b:ClearAllPoints()
+  b.tail:ClearAllPoints()
+  local size = Num(f:GetWidth()) or 40
+  if slots.row then
+    b:SetPoint("BOTTOM", f, "TOP", 0, size * 0.12 + 6)
+    b.tail:SetPoint("TOP", b, "BOTTOM", 0, 2)
+    if b.tail.SetRotation then pcall(b.tail.SetRotation, b.tail, math.pi / 2) end
+  else
+    b:SetPoint("RIGHT", f, "LEFT", -11, 0)
+    b.tail:SetPoint("LEFT", b, "RIGHT", -2, 0)
+    if b.tail.SetRotation then pcall(b.tail.SetRotation, b.tail, 0) end
+    if b.tail.SetTexCoord then b.tail:SetTexCoord(1, 0, 0, 1) end
+    f.label:SetAlpha(0)
+  end
+  if st == STYLE.parchment then b.tail:Show() else b.tail:Hide() end
+  b:Show()
+  if not f.low and not f.napping then f.emote:Hide() f.emoteUntil = false end
+  -- the words write themselves out
+  f.bubLen, f.bubShown = #plain, 0
+  if b.text.SetAlphaGradient then pcall(b.text.SetAlphaGradient, b.text, 0, 8) end
+  f.bubUntil = Now() + (secs or 3) + #plain / 40
+  local data = friends[f.who]
+  if data and #plain > 6 then data.said = plain end
+  return true
+end
+-- a whole line, from that owl: its bubble, a bob as it talks, and every other owl turns to look
+stage.Speak = function(who, text, secs)
+  for i = 1, 3 do
+    local f = slots[i]
+    if f and f.who == who and f:IsShown() and not f.busy and not f.wasDead then
+      if not stage.Bubble(f, text, secs or 3.5) then return false end
+      if cos.Hop then pcall(cos.Hop, who, nil, "talk") end
+      for k = 1, 3 do
+        local other = slots[k]
+        if other and other ~= f and other.who then stage.Glance(other, k > i and "owl_left.tga" or "owl_right.tga", 1.6) end
+      end
+      if cos.Idle then pcall(cos.Idle, "tilt", 1.2) end
+      return true
+    end
+  end
+  return false
+end
+
+-- ---------- who they are: class, level, where, asleep at the keys ----------
+local classByName, infoAt, infos = nil, -100, {}
+local function ClassFile(name)
+  if type(name) ~= "string" or name == "" then return nil end
+  if type(_G.RAID_CLASS_COLORS) == "table" and _G.RAID_CLASS_COLORS[name] then return name end
+  if not classByName then
+    classByName = {}
+    for _, t in ipairs({ _G.LOCALIZED_CLASS_NAMES_MALE, _G.LOCALIZED_CLASS_NAMES_FEMALE }) do
+      if type(t) == "table" then for file, loc in pairs(t) do if type(loc) == "string" then classByName[loc] = file end end end
+    end
+  end
+  return classByName[name] or classByName[name:sub(1, 1):upper() .. name:sub(2):lower()] or name:upper():gsub("%s", "")
+end
+local function Info(who, data)
+  if Now() - infoAt > 5 then
+    infoAt = Now()
+    infos = {}
+    for i = 1, math.min(Owl.FL.GetNumFriends(), 200) do
+      local e = Owl.FL.GetFriendInfoByIndex(i)
+      if type(e) == "table" and e.connected and type(e.name) == "string" then
+        infos[Owl.First((e.name:gsub("%-.*$", "")))] = { class = e.class, level = e.level, area = e.area, afk = e.afk }
+      end
+    end
+  end
+  local out = { class = nil, level = nil, area = nil, afk = false, className = nil }
+  local e = infos[who]
+  if e then out.className, out.class, out.level, out.area, out.afk = e.class, ClassFile(e.class), e.level, e.area, e.afk and true or false end
+  if data and not data.far then
+    for i = 1, 4 do
+      local unit = "party" .. i
+      if Plain(UnitName(unit)) == who then
+        local loc, file = Q("UnitClass", unit)
+        if type(file) == "string" then out.class, out.className = file, type(loc) == "string" and loc or out.className end
+        local lvl = Q("UnitLevel", unit)
+        if type(lvl) == "number" and lvl > 0 then out.level = lvl end
+        out.afk = Q("UnitIsAFK", unit) and true or false
+        out.area = nil
+      end
+    end
+  end
+  out.level = out.level or (data and Num(data.level)) or nil
+  return out
+end
+local function ClassColor(file)
+  local c = type(_G.RAID_CLASS_COLORS) == "table" and file and _G.RAID_CLASS_COLORS[file]
+  if type(c) == "table" and type(c.r) == "number" then return c.r, c.g, c.b end
+  return nil
+end
+
+-- ---------- nicknames: what your owl calls each of them ----------
+local NICKS = { "Big %s", "%s the Brave", "Captain %s", "Old %s", "Sir %s", "%s the Bold", "Lucky %s", "%s the Unstoppable", "Trusty %s", "%s the Loud", "Young %s", "%s of the Many Deaths" }
+Owl.Nick = function(who)
+  if type(who) ~= "string" or who == "" then return who end
+  if type(OwlHUDDB.nicks) ~= "table" then OwlHUDDB.nicks = {} end
+  local have = OwlHUDDB.nicks[who]
+  if type(have) == "string" and have ~= "" then return have end
+  local h = 7
+  for i = 1, #who do h = (h * 31 + who:byte(i)) % 100003 end
+  local made = NICKS[h % #NICKS + 1]:format(who)
+  OwlHUDDB.nicks[who] = made
+  return made
+end
+O.commands.nick = function(arg, raw)
+  local text = (type(raw) == "string" and raw ~= "" and raw or arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local who, rest = text:match("^(%S+)%s*(.-)$")
+  if not who or who == "" then
+    O.Print("|cffffd100What he calls your friends|r")
+    local any = false
+    for name in pairs(friends) do any = true print("  " .. name .. ": " .. Owl.Nick(name)) end
+    if not any then print("  No friends' owls beside him right now.") end
+    print("  Change one with /owl nick Paul Captain Paul")
+    return
+  end
+  who = Owl.First(who:sub(1, 1):upper() .. who:sub(2))
+  if rest == "" then O.Print("he calls " .. who .. ": " .. Owl.Nick(who)) return end
+  if type(OwlHUDDB.nicks) ~= "table" then OwlHUDDB.nicks = {} end
+  OwlHUDDB.nicks[who] = rest:gsub("[|%c]", ""):sub(1, 30)
+  O.Print("he will call " .. who .. ": " .. OwlHUDDB.nicks[who])
+end
+
+-- ---------- catchphrase: the line your owl says when it lands beside a friend's ----------
+local cpAt = {}
+local function SendCatch(who)
+  local line = OwlHUDDB.catch
+  if type(line) ~= "string" or line == "" or OwlHUDDB.social == false then return end
+  if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return end
+  if cpAt[who] and Now() - cpAt[who] < 600 then return end
+  cpAt[who] = Now()
+  pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "CP|" .. Name() .. "|" .. line, "WHISPER", Owl.Addr(who))
+end
+O.commands.catchphrase = function(arg, raw)
+  local text = (type(raw) == "string" and raw ~= "" and raw or arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "" then
+    O.Print("his catchphrase: " .. ((type(OwlHUDDB.catch) == "string" and OwlHUDDB.catch ~= "") and ("\"" .. OwlHUDDB.catch .. "\"") or "none yet") .. ". Set one with /owl catchphrase Fear the beak")
+    return
+  end
+  if text:lower() == "off" then OwlHUDDB.catch = nil O.Print("catchphrase cleared.") return end
+  OwlHUDDB.catch = text:gsub("[|;%c]", ""):sub(1, 40)
+  cpAt = {}
+  for who in pairs(friends) do SendCatch(who) end
+  O.Print("his catchphrase: \"" .. OwlHUDDB.catch .. "\". Your friends' screens show it when your owl lands beside theirs.")
+end
+local netBefore = Owl.onNet
+Owl.onNet = function(kind, sender, owl, extra)
+  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if kind == "HELLO" or kind == "HI" then SendCatch(sender)
+  elseif kind == "CP" and type(extra) == "string" and friends[sender] then
+    local line = extra:gsub("[|;%c]", ""):sub(1, 40)
+    friends[sender].catch = line ~= "" and line or nil
+    local keep = type(OwlHUDDB.friendLooks) == "table" and OwlHUDDB.friendLooks[sender]
+    if type(keep) == "table" then keep.catch = friends[sender].catch end
+  end
+end
+
+-- ---------- the card you get by pointing at one ----------
+local function Tip(f)
+  local tip = _G.GameTooltip
+  local data = f.who and friends[f.who]
+  if type(tip) ~= "table" or not tip.SetOwner or not data then return end
+  local info = Info(f.who, data)
+  tip:SetOwner(f, "ANCHOR_LEFT")
+  tip:AddLine(tostring(data.owl), 1, 0.82, 0)
+  tip:AddLine(f.who .. "'s owl", 0.7, 0.7, 0.7)
+  if info.level or info.className then
+    local r, g, b = ClassColor(info.class)
+    tip:AddLine((info.level and ("Level " .. info.level .. " ") or "") .. (info.className or ""), r or 1, g or 1, b or 1)
+  end
+  if data.dead then tip:AddLine("Down", 1, 0.3, 0.3)
+  elseif data.low then tip:AddLine("Hurt badly", 1, 0.5, 0.2)
+  elseif info.afk then tip:AddLine("Away from the keys", 0.7, 0.7, 1)
+  elseif data.far then tip:AddLine(info.area and ("In " .. info.area) or "Online, somewhere else", 0.8, 0.8, 0.8)
+  else tip:AddLine(data.away and "In your group, far off" or "In your group", 0.5, 1, 0.5) end
+  tip:AddLine("Yours calls them: " .. Owl.Nick(f.who), 0.9, 0.8, 0.6)
+  if data.catch then tip:AddLine("\"" .. data.catch .. "\"", 1, 1, 1, true) end
+  if data.said then tip:AddLine("Last said: " .. data.said, 0.75, 0.75, 0.75, true) end
+  tip:AddLine(data.far and "Click to whisper. Right-click to invite." or "Click to whisper.", 0.45, 0.75, 1)
+  tip:Show()
+end
+local function Card(f)
+  if f.carded then return end
+  f.carded = true
+  if not f.EnableMouse then return end
+  f:EnableMouse(true)
+  f:SetScript("OnEnter", function(self) O.Try("owl card", Tip, self) end)
+  f:SetScript("OnLeave", function() local tip = _G.GameTooltip if type(tip) == "table" and tip.Hide then tip:Hide() end end)
+  f:SetScript("OnMouseUp", function(self, button)
+    O.Try("owl card click", function()
+      local data = self.who and friends[self.who]
+      if not data then return end
+      local to = Owl.Addr(self.who)
+      if button == "RightButton" then
+        if not data.far then return end
+        if type(_G.C_PartyInfo) == "table" and _G.C_PartyInfo.InviteUnit then _G.C_PartyInfo.InviteUnit(to)
+        elseif type(_G.InviteUnit) == "function" then _G.InviteUnit(to) end
+      elseif type(_G.ChatFrame_SendTell) == "function" then _G.ChatFrame_SendTell(to)
+      elseif type(_G.ChatFrame_OpenChat) == "function" then _G.ChatFrame_OpenChat("/w " .. to .. " ") end
+    end)
+  end)
+end
+
+-- ---------- rain, and the things an owl holds ----------
+local rainAt, raining = -100, false
+local function Raining()
+  if Now() - rainAt < 3 then return raining end
+  rainAt = Now()
+  raining = false
+  if OwlHUDDB.weather == false then return false end
+  local w = _G.C_Weather
+  if type(w) == "table" and w.GetCurrentWeather then
+    local ok, kind, hard = pcall(w.GetCurrentWeather)
+    if ok and type(kind) == "table" then kind, hard = kind.type, kind.intensity end
+    kind, hard = Plain(kind), Plain(hard)
+    if ok and kind == 1 and (type(hard) ~= "number" or hard > 0.05) and not Q("IsIndoors") then raining = true end
+  end
+  if stage.forceRain then raining = true end
+  return raining
+end
+-- grand wings on a canvas twice the owl's, and an umbrella on one half as big again; both follow the owl itself
+local function Extras(holder, owlTex, mirror)
+  local x = {}
+  x.wings = holder:CreateTexture(nil, "BACKGROUND", nil, 3)
+  x.umb = holder:CreateTexture(nil, "OVERLAY", nil, 0)
+  x.hold = holder:CreateTexture(nil, "OVERLAY", nil, 1)
+  for _, t in ipairs({ x.wings, x.umb, x.hold }) do
+    if mirror and t.SetTexCoord then t:SetTexCoord(1, 0, 0, 1) end
+    t:Hide()
+  end
+  x.umb:SetTexture(MEDIA .. "umbrella.tga")
+  x.owl = owlTex
+  return x
+end
+local function ExtrasStep(x, size, plume, wingsFile, holding)
+  if wingsFile ~= x.wingsFile or plume ~= x.plume then
+    x.wingsFile = wingsFile
+    if wingsFile then x.wings:SetTexture(PlumeFile(wingsFile, plume)) x.wings:Show() else x.wings:Hide() end
+  end
+  if holding ~= x.holding or plume ~= x.plume then
+    x.holding = holding
+    if holding then
+      x.hold:SetTexture(PlumeFile("wing_hold.tga", plume))
+      x.hold:Show() x.umb:Show()
+    else x.hold:Hide() x.umb:Hide() end
+  end
+  x.plume = plume
+  if size ~= x.size and (wingsFile or holding) then
+    x.size = size
+    for _, t in ipairs({ x.wings, x.hold }) do
+      t:ClearAllPoints()
+      t:SetPoint("CENTER", x.owl, "CENTER", 0, 0)
+      t:SetSize(size * 2, size * 2)
+    end
+    x.umb:ClearAllPoints()
+    x.umb:SetPoint("BOTTOM", x.owl, "BOTTOM", 0, 0)
+    x.umb:SetSize(size * 1.5, size * 1.5)
+  end
+end
+local function WingsFor(face, flourish)
+  if type(face) == "string" then
+    if face:find("owl_fly2", 1, true) then return "wings_up.tga" end
+    if face:find("owl_fly1", 1, true) then return "wings_out.tga" end
+  end
+  if flourish then return "wings_up.tga" end
+  return nil
+end
+
+-- ---------- how each one arrives, and how it leaves ----------
+local ENTER = { "swoop", "drop", "pop", "roll", "peek" }
+local ENTER_DUR = { swoop = 1.1, drop = 1.0, pop = 0.9, roll = 1.2, peek = 1.6 }
+local LANDED = { "Hoo!", "Hoo hoo!", "Made it.", "Here!", "Ta-da!" }
+local function Reset(f)
+  f.enter, f.busy, f.pop, f.spin, f.napping, f.flourish = nil, nil, 1, 0, nil, nil
+  if f.SetAlpha then f:SetAlpha(1) end
+  f.label:SetAlpha(1)
+  if f.bub then f.bub:Hide() end
+  f.bubUntil = nil
+  if f.stack.look.perch then f.stack.perch:Show() end
+end
+local function Landed(f, i, data)
+  Reset(f)
+  Face(f, "owl_happy.tga", 1.4)
+  f.hop = 1
+  f.flourish = Now() + 0.45
+  stage.Bubble(f, data.catch or LANDED[math.random(#LANDED)], data.catch and 3.5 or 1.8)
+  for k = 1, 3 do
+    local other = slots[k]
+    if other and other ~= f and other.who then stage.Glance(other, k > i and "owl_left.tga" or "owl_right.tga", 1.4) end
+  end
+  if cos.Idle then pcall(cos.Idle, "hop", 0.7) end
+end
+local function Decorate(f, data, size)
+  local info = Info(f.who, data)
+  local s = f.stack
+  -- the name in their class colour
+  local r, g, b = ClassColor(info.class)
+  if f.label.SetTextColor then f.label:SetTextColor(r or 1, g or 0.82, b or 0) end
+  -- a scarf in their class colour, when the owl is not already wearing something at its neck
+  if not s.scarf then
+    s.scarf = f:CreateTexture(nil, "ARTWORK", nil, 4)
+    s.scarf:SetTexture(MEDIA .. "scarf_white.tga")
+    s.scarf:SetAllPoints(s.owl)
+    if s.scarf.SetTexCoord then s.scarf:SetTexCoord(1, 0, 0, 1) end
+    s.scarf:Hide()
+  end
+  if r and not s.look.neck and OwlHUDDB.classScarf ~= false then
+    if s.scarf.SetVertexColor then
+      local k = f.wasDead and 0.55 or 1
+      s.scarf:SetVertexColor(r * k, g * k, b * k)
+    end
+    s.scarf:Show()
+  else s.scarf:Hide() end
+  -- their level, on a small dark disc at the owl's foot
+  if not f.badge then
+    f.badge = f:CreateTexture(nil, "OVERLAY", nil, 3)
+    f.badge:SetTexture(MEDIA .. "gem_white.tga")
+    if f.badge.SetVertexColor then f.badge:SetVertexColor(0.07, 0.06, 0.05, 0.92) end
+    f.badgeText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    f.badgeText:SetPoint("CENTER", f.badge, "CENTER", 0, 0)
+  end
+  if info.level and not f.busy then
+    f.badge:ClearAllPoints()
+    f.badge:SetPoint("CENTER", f, "BOTTOMLEFT", size * 0.14, size * 0.2)
+    f.badge:SetSize(size * 0.4, size * 0.4)
+    f.badgeText:SetText(tostring(info.level))
+    if f.badgeText.SetTextColor then f.badgeText:SetTextColor(r or 1, g or 0.82, b or 0) end
+    f.badge:Show() f.badgeText:Show()
+  else f.badge:Hide() f.badgeText:Hide() end
+  -- a helmet inside a dungeon, unless it already wears a hat
+  local helm = slots.inside and not s.look.hat and true or false
+  if helm then
+    s.hat:SetTexture(MEDIA .. "hat_helm.tga")
+    if s.hat.SetTexCoord then s.hat:SetTexCoord(1, 0, 0, 1) end
+    s.hat:Show()
+  elseif f.helm and not s.look.hat then s.hat:Hide() end
+  f.helm = helm
+  -- asleep while their player is away from the keys
+  local nap = info.afk and not f.wasDead and not f.low and not f.busy and not f.visit
+  if nap then
+    if not f.napping then f.emote:SetText("|cffb0b0ffZzz|r") f.emote:Show() f.emoteUntil = false end
+    f.napping = true
+    Face(f, "owl_sleepy.tga", 3)
+  elseif f.napping then
+    f.napping = nil
+    if not f.low then f.emote:Hide() end
+    Face(f, Calm(f), 2)
+  end
+end
+stage.Offset = function(f, i, size, e)
+  local data = friends[f.who]
+  if not data then return 0, 0 end
+  local now = Now()
+  if f.stageWho ~= f.who or not data.entered then f.stageWho = f.who Reset(f) Card(f) f.decT = 1 end
+  if not f.extras then f.extras = Extras(f, f.stack.owl, true) f.stack.wing = f.extras.hold end
+  -- its bubble: the words appear, then it closes
+  if f.bubUntil then
+    if now >= f.bubUntil then
+      f.bubUntil = nil
+      f.bub:Hide()
+      if not f.busy then f.label:SetAlpha(1) end
+    elseif f.bubShown and f.bubShown < f.bubLen + 10 and f.bub.text.SetAlphaGradient then
+      f.bubShown = f.bubShown + e * 42
+      pcall(f.bub.text.SetAlphaGradient, f.bub.text, math.floor(f.bubShown), 8)
+    end
+  end
+  f.decT = (f.decT or 0) + e
+  if f.decT >= 0.5 then f.decT = 0 Decorate(f, data, size) end
+  local ox, oy = 0, 0
+  local fly = (math.floor(now / 0.13) % 2 == 0) and "owl_fly1.tga" or "owl_fly2.tga"
+  if data.leaving then
+    -- a small hop, then up and away to the left
+    local p = math.min((now - data.leaving) / 1.0, 1)
+    f.busy, f.pop = true, 1
+    f.label:SetAlpha(0)
+    if f.bub then f.bub:Hide() end
+    f.stack.perch:Hide()
+    if f.badge then f.badge:Hide() f.badgeText:Hide() end
+    if p < 0.15 then oy = math.sin(p / 0.15 * math.pi) * size * 0.2
+    else
+      local q = (p - 0.15) / 0.85
+      ox, oy = -q * q * size * 3, q * size * 2.4
+      f.spin = -0.25 * q
+      if f.face ~= fly then Face(f, fly) end
+      if f.SetAlpha then f:SetAlpha(1 - q * q) end
+    end
+  else
+    if not data.entered then
+      data.entered = true
+      if not data.catch then
+        local keep = type(OwlHUDDB.friendLooks) == "table" and OwlHUDDB.friendLooks[f.who]
+        if type(keep) == "table" and type(keep.catch) == "string" then data.catch = keep.catch end
+      end
+      if OwlHUDDB.fancy and OwlHUDDB.entrances ~= false then
+        f.enter = { kind = ENTER[math.random(#ENTER)], t = -0.4 * (i - 1) - 0.2, who = f.who }
+      end
+    end
+    local en = f.enter
+    if en and en.who ~= f.who then Reset(f) en = nil end
+    if en then
+      en.t = en.t + e
+      f.busy = true
+      f.label:SetAlpha(0)
+      f.stack.perch:Hide()
+      if en.t < 0 then
+        if f.SetAlpha then f:SetAlpha(0) end
+      else
+        local p = en.t / ENTER_DUR[en.kind]
+        if f.SetAlpha then f:SetAlpha(1) end
+        if p >= 1 then Landed(f, i, data)
+        elseif en.kind == "swoop" then
+          local ease = p * p * (3 - 2 * p)
+          ox = -(1 - ease) * size * 3.4
+          oy = (1 - ease) * size * 1.7 + math.sin(p * math.pi) * size * 0.3
+          f.spin = (1 - ease) * 0.3
+          if f.face ~= fly then Face(f, fly) end
+        elseif en.kind == "drop" then
+          if p < 0.55 then
+            local q = p / 0.55
+            oy = (1 - q * q) * size * 3.2
+            if f.face ~= "owl_fly2.tga" then Face(f, "owl_fly2.tga") end
+          else
+            local q = (p - 0.55) / 0.45
+            oy = math.sin(q * math.pi) * size * 0.24 * (1 - q)
+            if f.face ~= "owl_excited.tga" then Face(f, "owl_excited.tga") end
+          end
+        elseif en.kind == "pop" then
+          f.pop = p < 0.6 and (0.1 + (p / 0.6) * 1.1) or (1.2 - (p - 0.6) / 0.4 * 0.2)
+          f.spin = (1 - p) * (1 - p) * math.pi * 2
+          if f.SetAlpha then f:SetAlpha(math.min(1, p * 3)) end
+        elseif en.kind == "roll" then
+          local q = 1 - p
+          ox = -q * q * size * 3.2
+          f.spin = -ox / size * 3
+          oy = math.abs(math.sin(p * math.pi * 3)) * size * 0.12 * q
+        elseif en.kind == "peek" then
+          if p < 0.3 then oy = (-1 + (p / 0.3) * 0.55) * size if f.SetAlpha then f:SetAlpha(p / 0.3) end
+          elseif p < 0.72 then
+            oy = -0.45 * size
+            local want = p < 0.5 and "owl_left.tga" or "owl_right.tga"
+            if f.face ~= want then Face(f, want) end
+          else
+            local q = (p - 0.72) / 0.28
+            oy = -0.45 * size * (1 - q) + math.sin(q * math.pi) * size * 0.28
+            if f.face ~= "owl_excited.tga" then Face(f, "owl_excited.tga") end
+          end
+        end
+      end
+    elseif f.low and not f.wasDead then
+      -- hurt badly: feathers on end
+      f.spin = math.sin(now * 34) * 0.045
+    elseif (f.spin or 0) ~= 0 then f.spin = 0 end
+  end
+  if f.flourish and now >= f.flourish then f.flourish = nil end
+  local holding = Raining() and not f.wasDead and not f.busy and not f.visit
+  ExtrasStep(f.extras, size * (f.pop or 1), PlumeOf(f), (not f.wasDead) and WingsFor(f.face, f.flourish) or nil, holding)
+  return ox, oy
+end
+
+-- ---------- your own owl: grand wings, the umbrella, his entrances, and the mark on his bubble ----------
+local MY_ENTER = { { "dropin", 1.1 }, { "popin", 0.9 }, { "rollin", 1.2 }, { "swoopin", 1.2 }, { "peekin", 1.6 } }
+local myExtras, myFlourish, enteredAt = nil, nil, -100
+local function Enter()
+  if not OwlHUDDB.fancy or OwlHUDDB.entrances == false or not cos.Idle then return end
+  if Q("UnitIsDeadOrGhost", "player") or Now() - enteredAt < 4 then return end
+  enteredAt = Now()
+  local pick = MY_ENTER[math.random(#MY_ENTER)]
+  cos.Idle(pick[1], pick[2])
+  myFlourish = Now() + pick[2] + 0.45
+  stage.myLandAt = Now() + pick[2]
+end
+O.On("PLAYER_ENTERING_WORLD", function()
+  if C_Timer and C_Timer.After then C_Timer.After(0.4, function() O.Try("owl entrance", Enter) end) end
+end)
+O.defaults.entrances = true
+O.commands.enter = function(arg)
+  if arg == "off" or arg == "on" then
+    OwlHUDDB.entrances = arg == "on"
+    O.Print("entrances" .. (OwlHUDDB.entrances and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+    return
+  end
+  -- everyone off the branch and back on again
+  enteredAt = -100
+  for _, data in pairs(friends) do data.entered = nil end
+  Enter()
+end
+O.commands.branch = function()
+  OwlHUDDB.friendColumn = OwlHUDDB.friendColumn ~= true
+  slots.rowAt = 0
+  O.Print("friends' owls sit " .. (OwlHUDDB.friendColumn and "in a column at his shoulder" or "along one branch beside him"))
+end
+O.commands.rain = function()
+  stage.forceRain = not stage.forceRain
+  rainAt = -100
+  O.Print(stage.forceRain and "pretending it is raining, so you can see the umbrellas. /owl rain again to stop." or "back to the real weather.")
+end
+local acc = 0
+local driver = CreateFrame("Frame")
+driver:SetScript("OnUpdate", function(_, e)
+  O.Try("owl stage", function()
+    local now = Now()
+    -- the blinking mark, once he has finished writing a line
+    if nextMark then
+      local text = pal.text and Call0(pal.text, "GetText")
+      if text ~= lastText then lastText, stillFor = text, 0 else stillFor = stillFor + e end
+      local done = OwlHUDDB.bubble == "dusk" and pal.bubble:IsShown() and type(text) == "string" and text ~= "" and stillFor > 0.5
+      if done then
+        markT = markT + e
+        nextMark:Show()
+        nextMark:SetAlpha(0.55 + 0.45 * math.sin(markT * 5))
+      else nextMark:Hide() end
+    end
+    if not perch or not perch.icon or not perch:IsShown() then return end
+    if not myExtras then myExtras = Extras(perch, perch.icon, false) end
+    -- the dusk box opens with a small pop
+    local open = pal.bubble:IsShown() and true or false
+    if open and not stage.wasOpen then stage.openT = 0 end
+    stage.wasOpen = open
+    if stage.openT and pal.bubble.SetScale then
+      stage.openT = stage.openT + e
+      local p = math.min(stage.openT / 0.14, 1)
+      pal.bubble:SetScale((OwlHUDDB.bubble == "dusk") and (0.72 + 0.28 * p * (2 - p)) or 1)
+      if p >= 1 then stage.openT = nil end
+    end
+    local w = Num(perch.icon:GetWidth()) or 86
+    local shown = rawget(perch.icon, "owlShown")
+    local dead = Q("UnitIsDeadOrGhost", "player") and true or false
+    local flying = O.OwlFlying and O.OwlFlying() or false
+    if myFlourish and now >= myFlourish then myFlourish = nil end
+    local flourish = myFlourish and stage.myLandAt and now >= stage.myLandAt
+    local plume = cos.Body and cos.Body().p or nil
+    ExtrasStep(myExtras, w, plume, (not dead) and WingsFor(shown, flourish) or nil, Raining() and not dead and not flying)
+    -- when he speaks, the others turn to look at him
+    acc = acc + e
+    if acc >= 0.3 then
+      acc = 0
+      local said = pal.bubble:IsShown() and stage.lastSaid ~= lastText and type(lastText) == "string" and #lastText > 12
+      if said and stillFor > 0.3 then
+        stage.lastSaid = lastText
+        for k = 1, 3 do if slots[k] and slots[k].who then stage.Glance(slots[k], "owl_left.tga", 1.5) end end
+      end
+    end
+  end)
+end)
 end

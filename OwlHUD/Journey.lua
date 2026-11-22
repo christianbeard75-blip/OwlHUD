@@ -349,6 +349,8 @@ pal.bubble.bg:SetColorTexture(0.05, 0.04, 0.02, 0.9)
 for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
   local line = pal.bubble:CreateTexture(nil, "BORDER")
   line:SetColorTexture(0.89, 0.7, 0.29, 0.95)
+  pal.bubble.lines = pal.bubble.lines or {}
+  pal.bubble.lines[#pal.bubble.lines + 1] = line
   if side == "TOP" or side == "BOTTOM" then
     line:SetPoint(side .. "LEFT", pal.bubble, side .. "LEFT", 0, 0)
     line:SetPoint(side .. "RIGHT", pal.bubble, side .. "RIGHT", 0, 0)
