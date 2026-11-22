@@ -2,7 +2,7 @@
 ## Title: |cffffd100Owl|rHUD
 ## Notes: A talking owl companion who watches, remembers and helps, with a wardrobe, goals of his own and friends among other owls. Click him, or type /owl.
 ## Author: Christian
-## Version: 3.4
+## Version: 3.5
 ## SavedVariables: OwlHUDDB
 
 Core.lua

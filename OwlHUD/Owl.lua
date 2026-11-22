@@ -50,6 +50,56 @@ Owl.Addr = function(name)
   local t = OwlHUDDB.fullNames
   return (type(t) == "table" and type(t[name]) == "string" and t[name]) or name
 end
+-- Friends. He used to look only at the game's own friends list, so a friend added through Battle.net (most are)
+-- did not count as a friend at all: no owl beside yours, no letters, no level-up notice. Owl.FL answers the same
+-- two questions the game's list does, but from both lists together.
+Owl.FL = {}
+do
+  local list, builtAt = {}, -100
+  local function Build()
+    local out = {}
+    local game = _G.C_FriendList
+    if type(game) == "table" and game.GetNumFriends and game.GetFriendInfoByIndex then
+      for i = 1, math.min(tonumber(Plain(game.GetNumFriends())) or 0, 100) do
+        local ok, info = pcall(game.GetFriendInfoByIndex, i)
+        if ok and type(info) == "table" then
+          local name = Plain(info.name)
+          if type(name) == "string" and name ~= "" then
+            out[#out + 1] = { name = name, connected = Plain(info.connected) and true or false, level = tonumber(Plain(info.level)), area = Plain(info.area) }
+          end
+        end
+      end
+    end
+    local bnet = _G.C_BattleNet
+    if type(_G.BNGetNumFriends) == "function" and type(bnet) == "table" and bnet.GetFriendNumGameAccounts and bnet.GetFriendGameAccountInfo then
+      local okN, total = pcall(_G.BNGetNumFriends)
+      total = okN and tonumber(Plain(total)) or 0
+      for i = 1, math.min(total, 200) do
+        local okC, count = pcall(bnet.GetFriendNumGameAccounts, i)
+        for j = 1, math.min(okC and tonumber(Plain(count)) or 0, 6) do
+          local ok, g = pcall(bnet.GetFriendGameAccountInfo, i, j)
+          if ok and type(g) == "table" then
+            local char, client, project = Plain(g.characterName), Plain(g.clientProgram), Plain(g.wowProjectID)
+            local same = type(project) ~= "number" or type(_G.WOW_PROJECT_ID) ~= "number" or project == _G.WOW_PROJECT_ID
+            if type(char) == "string" and char ~= "" and client == "WoW" and Plain(g.isOnline) and same then
+              out[#out + 1] = { name = char, connected = true, level = tonumber(Plain(g.characterLevel)), area = Plain(g.areaName), bnet = true }
+            end
+          end
+        end
+      end
+    end
+    return out
+  end
+  Owl.FL.GetNumFriends = function()
+    if Now() - builtAt > 3 then
+      builtAt = Now()
+      local ok, built = pcall(Build)
+      list = ok and built or {}
+    end
+    return #list
+  end
+  Owl.FL.GetFriendInfoByIndex = function(i) return list[i] end
+end
 -- once: everything he wrote down under a full name moves to the first name, and what he wrote about "a friend"
 -- who was really you is thrown away
 O.On("PLAYER_LOGIN", function()
@@ -109,8 +159,10 @@ if okFrame and logFrame then
       local player = sGUID:sub(1, 7) == "Player-"
       local pet = (not player) and type(sFlags) == "number" and type(bit) == "table" and bit.band and bit.band(sFlags, 0x00000100) ~= 0 or false
       hit.name, hit.at, hit.player, hit.pet = sName, Now(), player, pet
-    elseif sub == "PARTY_KILL" and sGUID == mine and dGUID:sub(1, 7) == "Player-" and type(dName) == "string" then
-      if Owl.onPvpKill then pcall(Owl.onPvpKill, dName) end
+    elseif sub == "PARTY_KILL" and sGUID == mine then
+      -- a killing blow of yours: counted for the dungeon awards, and remembered by name when it was a player
+      if Owl.onBlow then pcall(Owl.onBlow) end
+      if dGUID:sub(1, 7) == "Player-" and type(dName) == "string" and Owl.onPvpKill then pcall(Owl.onPvpKill, dName) end
     end
   end)
 end
@@ -1420,6 +1472,7 @@ end)
 
 -- ---------- session numbers ----------
 local session = { start = nil, xp = 0, lastXP = nil, lastMax = nil, money = nil, kills = 0, deaths = 0, rested = nil }
+Owl.session = session
 O.On("PLAYER_LOGIN", function()
   session.start = Now()
   session.lastXP, session.lastMax = Plain(UnitXP("player")), Plain(UnitXPMax("player"))
@@ -1653,6 +1706,7 @@ local SLOTS = { { 16, "weapon", 1 }, { 1, "helmet", 26 }, { 3, "shoulders", 22 }
   { 17, "off hand", 999 }, { 18, "ranged slot", 999 } }
 
 local me = { gear = {}, stats = {}, profs = {}, trees = {} }
+Owl.me = me
 
 local function ItemFacts(link)
   local name, quality, ilvl
@@ -2871,9 +2925,9 @@ local function CheckFriends()
     if old and level > old and online then Say("friendlvl" .. name, name .. " is level " .. level .. " now.", 60) end
     levels[name] = level
   end
-  if C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex then
-    for i = 1, math.min(Num(Plain(C_FriendList.GetNumFriends())) or 0, 100) do
-      local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+  if Owl.FL then
+    for i = 1, math.min(Num(Plain(Owl.FL.GetNumFriends())) or 0, 100) do
+      local ok, info = pcall(Owl.FL.GetFriendInfoByIndex, i)
       if ok and type(info) == "table" then see(Plain(info.name), Plain(info.level), Plain(info.connected)) end
     end
   else
@@ -4129,9 +4183,9 @@ local newsAt = -100
 local function OwlFriends()
   local owls = type(OwlHUDDB.journal) == "table" and type(OwlHUDDB.journal.owls) == "table" and OwlHUDDB.journal.owls or {}
   local online = {}
-  if C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex then
-    for i = 1, math.min(Num(Plain(C_FriendList.GetNumFriends())) or 0, 100) do
-      local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+  if Owl.FL then
+    for i = 1, math.min(Num(Plain(Owl.FL.GetNumFriends())) or 0, 100) do
+      local ok, info = pcall(Owl.FL.GetFriendInfoByIndex, i)
       local name = ok and type(info) == "table" and Plain(info.connected) and Str(Plain(info.name))
       if name then
         local listed = name:gsub("%-.*$", "")
@@ -7840,9 +7894,9 @@ local function AddFriend(who, owl, look)
 end
 -- is this friend online? true, false, or nil when the friends list does not know them
 local function ListSays(name)
-  if not (C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex) then return nil end
-  for i = 1, math.min(Num(Plain(C_FriendList.GetNumFriends())) or 0, 100) do
-    local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+  if not (Owl.FL) then return nil end
+  for i = 1, math.min(Num(Plain(Owl.FL.GetNumFriends())) or 0, 100) do
+    local ok, info = pcall(Owl.FL.GetFriendInfoByIndex, i)
     local n = ok and type(info) == "table" and Str(Plain(info.name))
     if n and Owl.First((n:gsub("%-.*$", ""))) == name then return Plain(info.connected) and true or false end
   end
@@ -7853,14 +7907,14 @@ end
 local helloAt, listAt = {}, -100
 local function SeekFriends()
   if OwlHUDDB.farOwls == false or OwlHUDDB.social == false then return end
-  if not (C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex) then return end
+  if not (Owl.FL) then return end
   -- ask the game for a fresh friends list now and then; without this it can sit empty or stale after logging in
-  if Now() - listAt > 60 then listAt = Now() if C_FriendList.ShowFriends then pcall(C_FriendList.ShowFriends) end end
+  if Now() - listAt > 60 then listAt = Now() if type(C_FriendList) == "table" and C_FriendList.ShowFriends then pcall(C_FriendList.ShowFriends) end end
   local saved = type(OwlHUDDB.friendLooks) == "table" and OwlHUDDB.friendLooks or {}
   local met = type(OwlHUDDB.journal) == "table" and type(OwlHUDDB.journal.owls) == "table" and OwlHUDDB.journal.owls or {}
   local me = Me()
-  for i = 1, math.min(Num(Plain(C_FriendList.GetNumFriends())) or 0, 100) do
-    local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+  for i = 1, math.min(Num(Plain(Owl.FL.GetNumFriends())) or 0, 100) do
+    local ok, info = pcall(Owl.FL.GetFriendInfoByIndex, i)
     local name = ok and type(info) == "table" and Plain(info.connected) and Str(Plain(info.name))
     if name then
       local listed = name:gsub("%-.*$", "")
@@ -7888,6 +7942,9 @@ local function SeekFriends()
           if Owl.cos.Idle then pcall(Owl.cos.Idle, "cheer", 1) end
         end
         data.level = lvl
+        -- the friends list also says where they are, so the grey line under the name fills in before their owl writes
+        local area = Str(Plain(info.area))
+        if area and not data.note then data.note = lvl .. ", " .. area end
       end
       if not (data and data.heard) and C_ChatInfo and C_ChatInfo.SendAddonMessage then
         local every = (s or met[name]) and 45 or 300
@@ -8929,9 +8986,9 @@ local function Here()
 end
 local function FriendOnline(name)
   if Grouped(name) then return true end
-  if C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex then
-    for i = 1, math.min(Num(Plain(C_FriendList.GetNumFriends())) or 0, 100) do
-      local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+  if Owl.FL then
+    for i = 1, math.min(Num(Plain(Owl.FL.GetNumFriends())) or 0, 100) do
+      local ok, info = pcall(Owl.FL.GetFriendInfoByIndex, i)
       local n = ok and type(info) == "table" and Plain(info.connected) and Str(Plain(info.name))
       if n and Owl.First((n:gsub("%-.*$", ""))) == name then return true end
     end
@@ -8953,9 +9010,9 @@ local function Far()
 end
 local function OnlineFriends()
   local set, list = {}, {}
-  if C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex then
-    for i = 1, math.min(Num(Plain(C_FriendList.GetNumFriends())) or 0, 100) do
-      local ok, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
+  if Owl.FL then
+    for i = 1, math.min(Num(Plain(Owl.FL.GetNumFriends())) or 0, 100) do
+      local ok, info = pcall(Owl.FL.GetFriendInfoByIndex, i)
       local n = ok and type(info) == "table" and Plain(info.connected) and Str(Plain(info.name))
       if n then
         local listed = n:gsub("%-.*$", "")
@@ -11260,5 +11317,351 @@ Owl.probe.pvp = function()
   return "clog registered=" .. tostring(Owl.clog and Owl.clog.registered) .. " events=" .. tostring(Owl.clog and Owl.clog.events) .. " hitsOnYouNamed=" .. tostring(Owl.clog and Owl.clog.named)
     .. " fn=" .. type(CombatLogGetCurrentEventInfo) .. " killedBy=" .. by .. " beaten=" .. won
     .. " lastKiller=" .. (type(k) == "table" and (tostring(k.name) .. "/player=" .. tostring(k.player) .. "/sure=" .. tostring(k.sure)) or "none")
+end
+end
+
+-- =====================================================================================
+-- The things friends notice first: awards after a dungeon, a reading of your character
+-- the day you meet him, owls that talk to each other, and a recap when you log off.
+-- =====================================================================================
+do
+local function Scrub(text, limit) return (tostring(text):gsub("[;|%c]", ""):sub(1, limit)) end
+local function Later(seconds, fn)
+  if C_Timer and C_Timer.After then C_Timer.After(seconds, function() O.Try("owl extras", fn) end) else O.Try("owl extras", fn) end
+end
+local function Span(seconds)
+  local m = math.floor(seconds / 60 + 0.5)
+  if m < 60 then return m .. " min" end
+  return math.floor(m / 60) .. " h " .. (m % 60) .. " min"
+end
+
+-- ---------- 1. dungeon awards ----------
+-- Every owl in the party tells the others how its player did (deaths, lowest health, killing blows, levels), and
+-- then they all hand out the same awards. It happens when the first of you walks out after a run of eight minutes
+-- or more, or when anyone types /owl awards.
+O.defaults.awards = true
+local rows, announcedAt, repliedAt = {}, {}, {}
+local function Run()
+  local rec = Owl.Record()
+  return type(rec.run) == "table" and rec.run.name and rec.run or nil
+end
+local function MyRow(run)
+  return { deaths = Num(run.deaths) or 0, low = math.floor(Num(run.low) or 100), blows = Num(run.blows) or 0, levels = Num(run.levels) or 0 }
+end
+local function Tell(dungeon, run, asking)
+  local r = MyRow(run)
+  if Owl.net then pcall(Owl.net.Send, "AWD", dungeon .. ";" .. r.deaths .. ";" .. r.low .. ";" .. r.blows .. ";" .. r.levels .. ";" .. (asking and 1 or 0)) end
+end
+local function Announce(dungeon)
+  if OwlHUDDB.awards == false then return end
+  if announcedAt[dungeon] and Now() - announcedAt[dungeon] < 1200 then return end
+  local set = rows[dungeon]
+  if type(set) ~= "table" then return end
+  local names = {}
+  for name in pairs(set) do names[#names + 1] = name end
+  if #names < 2 then return end
+  table.sort(names)
+  announcedAt[dungeon] = Now()
+  local parts = {}
+  -- Floor Inspector: the most deaths
+  local most, mostN, shared = nil, 0, false
+  for _, name in ipairs(names) do
+    local d = set[name].deaths
+    if d > mostN then most, mostN, shared = name, d, false elseif d == mostN and d > 0 then shared = true end
+  end
+  if most then parts[#parts + 1] = "Floor Inspector: " .. most .. (shared and " (shared)" or "") .. ", " .. mostN .. (mostN == 1 and " death" or " deaths") end
+  -- Closest Shave: got lowest and lived to tell
+  local shave, shaveN = nil, 20
+  for _, name in ipairs(names) do
+    local low = set[name].low
+    if low > 0 and low < shaveN then shave, shaveN = name, low end
+  end
+  if shave then parts[#parts + 1] = "Closest Shave: " .. shave .. ", down to " .. shaveN .. "% health" end
+  -- Finisher: the most killing blows, when one of you is clearly ahead
+  local fin, finN, finTie = nil, 4, false
+  for _, name in ipairs(names) do
+    local b = set[name].blows
+    if b > finN then fin, finN, finTie = name, b, false elseif b == finN then finTie = true end
+  end
+  if fin and not finTie then parts[#parts + 1] = "Finisher: " .. fin .. ", " .. finN .. " killing blows" end
+  -- Untouchable: the only one who never died, when somebody did
+  if mostN > 0 then
+    local clean = {}
+    for _, name in ipairs(names) do if set[name].deaths == 0 then clean[#clean + 1] = name end end
+    if #clean == 1 then parts[#parts + 1] = "Untouchable: " .. clean[1] .. ", not one death" end
+  end
+  -- Ding: levelled in there
+  local dinged = {}
+  for _, name in ipairs(names) do if set[name].levels > 0 then dinged[#dinged + 1] = name end end
+  if #dinged > 0 then parts[#parts + 1] = "Ding: " .. table.concat(dinged, " and ") .. " levelled in there" end
+  while #parts > 3 do table.remove(parts) end
+  local line
+  if #parts == 0 then line = "A clean run of " .. dungeon .. ". Nobody died and nobody came close. No awards for falling over."
+  else line = "Awards for " .. dungeon .. ". " .. table.concat(parts, ". ") .. "." end
+  O.Print("|cffffd100" .. (#parts == 0 and "A clean run" or "Awards") .. "|r  " .. dungeon)
+  for _, part in ipairs(parts) do print("   " .. part) end
+  Say("awards" .. dungeon .. Now(), line, 0, "uc")
+  if Owl.cos then
+    if Owl.cos.Idle then pcall(Owl.cos.Idle, "cheer", 1.2) end
+    for _, name in ipairs(names) do if name ~= Me() and Owl.cos.Hop then pcall(Owl.cos.Hop, name, "Hoo!", "cheer") end end
+  end
+end
+local function Begin(byHand)
+  local run = Run()
+  if not run then
+    if byHand then O.Print("no dungeon run to give awards for. Use this at the end of a dungeon, with your group.") end
+    return
+  end
+  if not Q("IsInGroup") then
+    if byHand then O.Print("awards need your group. You are on your own.") end
+    return
+  end
+  if not byHand and Clock() - (Num(run.start) or Clock()) < 480 then return end
+  local dungeon = Scrub(run.name, 30)
+  if byHand then announcedAt[dungeon] = nil elseif announcedAt[dungeon] and Now() - announcedAt[dungeon] < 1200 then return end
+  rows[dungeon] = rows[dungeon] or {}
+  rows[dungeon][Me()] = MyRow(run)
+  Tell(dungeon, run, true)
+  Later(6, function() Announce(dungeon) end)
+  if byHand then O.Print("asking the other owls how their players did...") end
+end
+O.commands.awards = function(arg)
+  if arg == "off" or arg == "on" then
+    OwlHUDDB.awards = arg == "on"
+    O.Print("awards after a dungeon" .. (OwlHUDDB.awards and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+    return
+  end
+  Begin(true)
+end
+-- what he keeps count of during a run
+O.On("PLAYER_LEVEL_UP", function() local run = Run() if run then run.levels = (Num(run.levels) or 0) + 1 end end)
+Owl.onBlow = function() local run = Run() if run and not run.leftAt then run.blows = (Num(run.blows) or 0) + 1 end end
+local watchAcc, wasInside, leftAt = 0, false, nil
+local watcher = CreateFrame("Frame")
+watcher:SetScript("OnUpdate", function(_, e)
+  watchAcc = watchAcc + e
+  if watchAcc < 0.5 then return end
+  watchAcc = 0
+  O.Try("owl awards", function()
+    local inside, kind = Q("IsInInstance")
+    inside = (inside and kind == "party") and true or false
+    local dead = Q("UnitIsDeadOrGhost", "player") and true or false
+    if inside then
+      leftAt = nil
+      local run = Run()
+      local hp, max = Plain(UnitHealth("player")), Plain(UnitHealthMax("player"))
+      if run and not dead and type(hp) == "number" and type(max) == "number" and max > 0 and hp > 0 then
+        local pct = math.floor(hp / max * 100)
+        if pct < (Num(run.low) or 100) then run.low = pct end
+      end
+    elseif wasInside and not dead then
+      -- walked out alive (releasing after a death also puts you outside, which is not the end of a run)
+      leftAt = Now()
+    end
+    if leftAt and not inside and Now() - leftAt >= 8 then
+      leftAt = nil
+      if not dead and OwlHUDDB.awards ~= false then Begin(false) end
+    end
+    wasInside = inside
+  end)
+end)
+
+-- ---------- 2. the reading: the first time he meets you, he sizes you up ----------
+local function Reading(byHand)
+  local rec = Owl.Record()
+  if not byHand then
+    if rec.readingDone then return end
+    rec.readingDone = true
+    -- only for someone he has just met; an old friend does not need introducing
+    if (Num(rec.sessions) or 0) > 2 then return end
+  end
+  local race, class = Plain((UnitRace("player"))), Plain((UnitClass("player")))
+  local lines = { "So. " .. Me() .. ", level " .. Level() .. (type(race) == "string" and (" " .. race) or "") .. (type(class) == "string" and (" " .. class) or "") .. ". Hold still. Let me look at you." }
+  local me = type(Owl.me) == "table" and Owl.me or {}
+  -- what you are wearing
+  local good, plain, worn = 0, 0, 0
+  for _, item in pairs(type(me.gear) == "table" and me.gear or {}) do
+    if type(item) == "table" then
+      worn = worn + 1
+      local q = Num(item.quality) or 1
+      if q >= 2 then good = good + 1 else plain = plain + 1 end
+    end
+  end
+  if worn >= 4 then
+    local ilvl = Num(me.ilvl)
+    local verdict = "Respectable."
+    if ilvl and ilvl >= Level() + 4 then verdict = "Better dressed than most at your level."
+    elseif ilvl and ilvl <= Level() - 6 then verdict = "You are dressed for a level you left a while ago."
+    elseif plain > good then verdict = "More plain pieces than good ones. We will work on that." end
+    lines[#lines + 1] = good .. (good == 1 and " good piece" or " good pieces") .. " of gear and " .. plain .. " plain. " .. verdict
+  end
+  -- your trades
+  local trades = {}
+  for _, p in ipairs(type(me.profs) == "table" and me.profs or {}) do if type(p) == "table" and type(p[1]) == "string" then trades[#trades + 1] = p[1] end end
+  if #trades == 0 then
+    -- only said once he has actually read your skills; an empty list before that proves nothing
+    if me.gathered then lines[#lines + 1] = "No professions that I can see. Travelling light." end
+  elseif #trades == 1 then lines[#lines + 1] = trades[1] .. ", and nothing else. A specialist."
+  else lines[#lines + 1] = trades[1] .. " and " .. trades[2] .. (#trades > 2 and (", and " .. (#trades - 2) .. " more") or "") .. ". Good. An owl likes someone with a trade." end
+  -- company and coin
+  local money = Owl.Money and Owl.Money()
+  local gold = type(money) == "number" and math.floor(money / 10000) or nil
+  if type(me.guild) == "string" and me.guild ~= "" then lines[#lines + 1] = "Guild: " .. me.guild .. ". So you do have friends."
+  elseif gold and gold < 1 then lines[#lines + 1] = "No guild, and less than one gold to your name. We will fix both."
+  elseif gold then lines[#lines + 1] = "No guild, " .. gold .. " gold. A lone wolf with an owl." end
+  lines[#lines + 1] = "That will do. I am your owl now. Click me, or type /owl."
+  for i, text in ipairs(lines) do Later((i - 1) * 7, function() Say("reading" .. i .. Now(), text, 0, "c") end) end
+end
+O.commands.reading = function() Reading(true) end
+local metAt = nil
+O.On("PLAYER_ENTERING_WORLD", function()
+  if metAt then return end
+  metAt = Now()
+  Later(14, function() Reading(false) end)
+end)
+
+-- ---------- 3. owls that talk to each other ----------
+-- When you group with a friend whose owl he knows, the two owls trade a line. Both players see the same exchange:
+-- which pair of lines, and which owl opens, is worked out the same way on both sides.
+O.defaults.banter = true
+local BANTER = {
+  { "Fancy meeting you here.", "I go where the snacks go." },
+  { "Is yours behaving?", "Define behaving." },
+  { "Mine pulled the whole room yesterday.", "Mine fell off a bridge. Twice." },
+  { "Nice perch.", "It came with the job." },
+  { "How many deaths today?", "I stopped counting. It felt rude." },
+  { "Ready for this?", "I was hatched ready." },
+  { "Do you ever sleep?", "Only when they are in town." },
+  { "Mine thinks they are in charge.", "Let them. It keeps them busy." },
+  { "Have you eaten?", "Twice. Do not tell mine." },
+  { "Same plan as last time?", "There was a plan?" },
+  { "Yours looks tired.", "Yours looks lost." },
+  { "I have a good feeling about today.", "You said that last time." },
+}
+local banterAt = {}
+local function Grouped(name)
+  if not Q("IsInGroup") or Q("IsInRaid") then return false end
+  for _, n in ipairs(Owl.lib and Owl.lib.PartyNames and Owl.lib.PartyNames() or {}) do if n == name then return true end end
+  return false
+end
+local function Banter(sender, owl)
+  if OwlHUDDB.banter == false or OwlHUDDB.social == false or not Grouped(sender) then return end
+  if banterAt[sender] and Now() - banterAt[sender] < 1800 then return end
+  banterAt[sender] = Now()
+  local me = Me()
+  local first, second = me, sender
+  if sender < me then first, second = sender, me end
+  local key, h = first .. second, math.floor(Clock() / 86400)
+  for i = 1, #key do h = (h * 31 + key:byte(i)) % 100003 end
+  local pair = BANTER[h % #BANTER + 1]
+  local theirs = tostring(owl)
+  local function they(text)
+    Say("banter" .. sender .. Now(), theirs .. " says: \"" .. text .. "\"", 0, "c")
+    if Owl.cos and Owl.cos.Hop then pcall(Owl.cos.Hop, sender, "...", "talk") end
+  end
+  local function mine(text)
+    Say("banterme" .. sender .. Now(), "To " .. theirs .. ": \"" .. text .. "\"", 0, "c")
+    if Owl.cos and Owl.cos.Idle then pcall(Owl.cos.Idle, "tilt", 1.2) end
+  end
+  if first == me then
+    Later(4, function() mine(pair[1]) end)
+    Later(10, function() they(pair[2]) end)
+  else
+    Later(4, function() they(pair[1]) end)
+    Later(10, function() mine(pair[2]) end)
+  end
+end
+
+local netBefore = Owl.onNet
+Owl.onNet = function(kind, sender, owl, extra)
+  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if kind == "HELLO" or kind == "HI" then
+    Later(2, function() Banter(sender, owl) end)
+  elseif kind == "AWD" and type(extra) == "string" then
+    local dungeon, deaths, low, blows, levels, asking = extra:match("^(.-);(%d+);(%d+);(%d+);(%d+);(%d)$")
+    if not dungeon or dungeon == "" or not Grouped(sender) then return end
+    rows[dungeon] = rows[dungeon] or {}
+    rows[dungeon][sender] = { deaths = tonumber(deaths), low = tonumber(low), blows = tonumber(blows), levels = tonumber(levels) }
+    local run = Run()
+    local same = run and Scrub(run.name, 30) == dungeon
+    if asking == "1" then
+      -- someone called for the awards: give my player's numbers, and get ready to announce with everyone else
+      if announcedAt[dungeon] and Now() - announcedAt[dungeon] > 60 then announcedAt[dungeon] = nil end
+      if same then
+        rows[dungeon][Me()] = MyRow(run)
+        if not repliedAt[dungeon] or Now() - repliedAt[dungeon] > 30 then
+          repliedAt[dungeon] = Now()
+          Tell(dungeon, run, false)
+        end
+      end
+    end
+    if rows[dungeon][Me()] then Later(6, function() Announce(dungeon) end) end
+  end
+end
+
+-- ---------- 4. the recap when you log off ----------
+local loginLevel, loginClock = nil, Clock()
+O.On("PLAYER_ENTERING_WORLD", function() if not loginLevel then loginLevel = Level() end end)
+local function Recap()
+  local s = Owl.session
+  if type(s) ~= "table" or not s.start then return nil end
+  local played = math.max(1, Now() - s.start)
+  local out = {}
+  local levels = loginLevel and (Level() - loginLevel) or 0
+  out[1] = "This session: " .. Span(played) .. ", " .. (Num(s.kills) or 0) .. " kills, " .. (Num(s.deaths) or 0) .. ((Num(s.deaths) or 0) == 1 and " death" or " deaths")
+    .. (levels > 0 and (", " .. levels .. (levels == 1 and " level" or " levels") .. " gained") or "") .. "."
+  local money = Owl.Money and Owl.Money()
+  if type(money) == "number" and type(s.money) == "number" and O.Money then
+    local diff = money - s.money
+    if math.abs(diff) >= 100 then out[#out + 1] = (diff >= 0 and "Gold earned: " or "Gold spent: ") .. O.Money(math.abs(diff)) .. "." end
+  end
+  local rec = Owl.Record()
+  if type(rec.pvp) == "table" then
+    local beat, lost, worst, worstAt = 0, 0, nil, 0
+    for name, e in pairs(type(rec.pvp.won) == "table" and rec.pvp.won or {}) do if type(e) == "table" and (Num(e.last) or 0) >= loginClock then beat = beat + 1 end end
+    for name, e in pairs(type(rec.pvp.by) == "table" and rec.pvp.by or {}) do
+      if type(e) == "table" and (Num(e.last) or 0) >= loginClock then
+        lost = lost + 1
+        if e.last > worstAt then worst, worstAt = name, e.last end
+      end
+    end
+    if beat + lost > 0 then out[#out + 1] = "Other players: " .. beat .. " beaten, " .. lost .. " got you." .. (worst and (" Last one was " .. worst .. ".") or "") end
+  end
+  return out, played
+end
+O.commands.recap = function()
+  local lines = Recap()
+  if not lines then O.Print("nothing to recap yet.") return end
+  O.Print("|cffffd100Recap|r")
+  for _, text in ipairs(lines) do print("  " .. text) end
+end
+local recapAt = -1000
+O.On("PLAYER_CAMPING", function()
+  local lines, played = Recap()
+  if not lines or played < 600 or Now() - recapAt < 120 then return end
+  recapAt = Now()
+  O.commands.recap()
+  Say("recap" .. Now(), lines[1], 0, "uc")
+end)
+
+-- for the report: which friends he can see, and through which list
+Owl.probe = Owl.probe or {}
+Owl.probe.friends = function()
+  local total, online, bnet, known = 0, 0, 0, {}
+  local saved = type(OwlHUDDB.friendLooks) == "table" and OwlHUDDB.friendLooks or {}
+  for i = 1, Owl.FL.GetNumFriends() do
+    local info = Owl.FL.GetFriendInfoByIndex(i)
+    if type(info) == "table" then
+      total = total + 1
+      if info.connected then online = online + 1 end
+      if info.bnet then bnet = bnet + 1 end
+      local first = Owl.First((tostring(info.name):gsub("%-.*$", "")))
+      if info.connected and saved[first] and #known < 6 then known[#known + 1] = first .. (info.bnet and "(bnet)" or "") end
+    end
+  end
+  local beside = 0
+  for _ in pairs(Owl.cos and Owl.cos.friends or {}) do beside = beside + 1 end
+  return "listed=" .. total .. " online=" .. online .. " viaBattleNet=" .. bnet .. " onlineWithOwl[" .. table.concat(known, ",") .. "] owlsBeside=" .. beside
+    .. " BNGetNumFriends:" .. type(_G.BNGetNumFriends) .. " C_BattleNet:" .. type(_G.C_BattleNet)
 end
 end
