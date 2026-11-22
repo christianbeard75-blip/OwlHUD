@@ -11442,6 +11442,12 @@ local function Announce(dungeon)
   local line
   if #parts == 0 then line = "A clean run of " .. dungeon .. ". Nobody died and nobody came close. No awards for falling over."
   else line = "Awards for " .. dungeon .. ". " .. table.concat(parts, ". ") .. "." end
+  if Owl.stage and Owl.stage.Notice then
+    local show = {}
+    for _, part in ipairs(parts) do show[#show + 1] = (part:gsub("^([^:]+):", function(name) return Owl.stage.Key(name) .. ":" end)) end
+    if #show == 0 then show[1] = "Nobody died and nobody came close." end
+    pcall(Owl.stage.Notice, (#parts == 0 and "A clean run: " or "Awards: ") .. dungeon, show, 9)
+  end
   O.Print("|cffffd100" .. (#parts == 0 and "A clean run" or "Awards") .. "|r  " .. dungeon)
   for _, part in ipairs(parts) do print("   " .. part) end
   Say("awards" .. dungeon .. Now(), line, 0, "uc")
@@ -11679,6 +11685,7 @@ O.commands.recap = function()
   if not lines then O.Print("nothing to recap yet.") return end
   O.Print("|cffffd100Recap|r")
   for _, text in ipairs(lines) do print("  " .. text) end
+  if Owl.stage and Owl.stage.Notice then pcall(Owl.stage.Notice, "This session", lines, 9) end
 end
 local recapAt = -1000
 O.On("PLAYER_CAMPING", function()
@@ -11773,6 +11780,7 @@ local function Panel(frame, layer)
   end
   return p
 end
+stage.Panel = Panel
 local STYLE = {
   parchment = { 0.93, 0.86, 0.70, 0.97, 0.17, 0.10, 0.04 },
   dark = { 0.05, 0.04, 0.02, 0.9, 1, 1, 1 },
@@ -12005,9 +12013,9 @@ end
 
 -- ---------- the card you get by pointing at one ----------
 local function Tip(f)
-  local tip = _G.GameTooltip
   local data = f.who and friends[f.who]
-  if type(tip) ~= "table" or not tip.SetOwner or not data then return end
+  if not data or not stage.CardTip then return end
+  local tip = stage.CardTip()
   local info = Info(f.who, data)
   tip:SetOwner(f, "ANCHOR_LEFT")
   tip:AddLine(tostring(data.owl), 1, 0.82, 0)
@@ -12033,7 +12041,7 @@ local function Card(f)
   if not f.EnableMouse then return end
   f:EnableMouse(true)
   f:SetScript("OnEnter", function(self) O.Try("owl card", Tip, self) end)
-  f:SetScript("OnLeave", function() local tip = _G.GameTooltip if type(tip) == "table" and tip.Hide then tip:Hide() end end)
+  f:SetScript("OnLeave", function() if stage.CardTip then stage.CardTip():Hide() end end)
   f:SetScript("OnMouseUp", function(self, button)
     O.Try("owl card click", function()
       local data = self.who and friends[self.who]
@@ -12387,6 +12395,163 @@ driver:SetScript("OnUpdate", function(_, e)
         stage.lastSaid = lastText
         for k = 1, 3 do if slots[k] and slots[k].who then stage.Glance(slots[k], "owl_left.tga", 1.5) end end
       end
+    end
+  end)
+end)
+end
+
+-- =====================================================================================
+-- The dusk look, carried further: a box that opens in the middle of the screen for the big moments,
+-- a card of the same cloth when you point at an owl, and windows in the same colours.
+-- =====================================================================================
+do
+local stage = Owl.stage
+local DUSK = { 0.0, 0.02, 0.09, 0.8 }
+local KEY = "|cffffd24a"
+local function Hex(r, g, b) return ("|cff%02x%02x%02x"):format(math.floor((r or 1) * 255 + 0.5), math.floor((g or 1) * 255 + 0.5), math.floor((b or 1) * 255 + 0.5)) end
+local function Height(fs, fallback)
+  local ok, h = pcall(function() return fs:GetStringHeight() end)
+  return (ok and type(h) == "number" and h > 0) and h or fallback
+end
+
+-- ---------- the box ----------
+O.defaults.notices = true
+local box, queue, cur = nil, {}, nil
+local function Build()
+  box = CreateFrame("Frame", "OwlHUDNotice", UIParent)
+  box:SetSize(440, 90)
+  box:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 240)
+  if box.SetFrameStrata then box:SetFrameStrata("HIGH") end
+  box.panel = stage.Panel(box, "BACKGROUND")
+  box.panel.Color(DUSK[1], DUSK[2], DUSK[3], DUSK[4])
+  box.title = box:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  box.title:SetPoint("TOP", box, "TOP", 0, -12)
+  box.title:SetTextColor(0.55, 0.8, 1)
+  box.text = box:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  box.text:SetPoint("TOP", box.title, "BOTTOM", 0, -8)
+  box.text:SetWidth(400)
+  if box.text.SetJustifyH then box.text:SetJustifyH("CENTER") end
+  if box.text.SetSpacing then box.text:SetSpacing(4) end
+  if box.text.SetWordWrap then box.text:SetWordWrap(true) end
+  box.mark = box:CreateTexture(nil, "OVERLAY")
+  box.mark:SetTexture(MEDIA .. "next.tga")
+  box.mark:SetSize(12, 12)
+  box.mark:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -9, 7)
+  if box.mark.SetVertexColor then box.mark:SetVertexColor(0.45, 0.75, 1, 1) end
+  if box.EnableMouse then
+    box:EnableMouse(true)
+    box:SetScript("OnMouseUp", function() if cur then cur.till = math.min(cur.till, Now()) end end)
+  end
+  box:Hide()
+end
+-- title, then lines. Words wrapped in stage.Key(...) stand out in gold.
+stage.Key = function(text) return KEY .. tostring(text) .. "|r" end
+stage.Notice = function(title, lines, secs)
+  if OwlHUDDB.notices == false or type(lines) ~= "table" then return false end
+  if #queue >= 4 then return false end
+  queue[#queue + 1] = { title = tostring(title), text = table.concat(lines, "\n"), secs = secs or 7 }
+  return true
+end
+O.commands.notices = function()
+  OwlHUDDB.notices = OwlHUDDB.notices == false
+  O.Print("the box for big moments" .. (OwlHUDDB.notices and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+  if OwlHUDDB.notices then stage.Notice("Like this", { "Awards, level-ups and your recap", "open in a box " .. stage.Key("like this one") .. "." }, 5) end
+end
+
+-- ---------- the card ----------
+local card, cardFrame
+stage.CardTip = function()
+  if card then return card end
+  cardFrame = CreateFrame("Frame", "OwlHUDCard", UIParent)
+  if cardFrame.SetFrameStrata then cardFrame:SetFrameStrata("TOOLTIP") end
+  cardFrame.panel = stage.Panel(cardFrame, "BACKGROUND")
+  cardFrame.panel.Color(DUSK[1], DUSK[2], DUSK[3], 0.9)
+  cardFrame.text = cardFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  cardFrame.text:SetPoint("TOPLEFT", cardFrame, "TOPLEFT", 10, -9)
+  if cardFrame.text.SetJustifyH then cardFrame.text:SetJustifyH("LEFT") end
+  if cardFrame.text.SetSpacing then cardFrame.text:SetSpacing(3) end
+  cardFrame:Hide()
+  card = { lines = {} }
+  card.SetOwner = function(self, owner) self.owner, self.lines = owner, {} end
+  card.AddLine = function(self, text, r, g, b) self.lines[#self.lines + 1] = Hex(r, g, b) .. tostring(text) .. "|r" end
+  card.Show = function(self)
+    local fs = cardFrame.text
+    fs:SetWidth(0)
+    fs:SetText(table.concat(self.lines, "\n"))
+    local okW, w = pcall(function() return fs:GetStringWidth() end)
+    w = (okW and type(w) == "number" and w > 0) and w or 160
+    if w > 230 then w = 230 fs:SetWidth(230) end
+    cardFrame:SetSize(w + 20, Height(fs, #self.lines * 13) + 18)
+    cardFrame:ClearAllPoints()
+    if Owl.cos.slots.row then cardFrame:SetPoint("BOTTOM", self.owner, "TOP", 0, 10)
+    else cardFrame:SetPoint("RIGHT", self.owner, "LEFT", -10, 0) end
+    cardFrame:Show()
+  end
+  card.Hide = function() cardFrame:Hide() end
+  return card
+end
+
+-- ---------- the windows ----------
+local WINDOWS = { "OwlHUDOptions", "OwlHUDWardrobe", "OwlHUDFinds", "OwlHUDWelcome", "OwlHUDJournal" }
+local themed, themeAcc = {}, 0
+local function Theme()
+  local style = OwlHUDDB.bubble == "dusk" and "dusk" or "plain"
+  for _, name in ipairs(WINDOWS) do
+    local f = _G[name]
+    if type(f) == "table" and type(f.bg) == "table" and f.bg.SetColorTexture and themed[name] ~= style then
+      if style == "dusk" then f.bg:SetColorTexture(0.02, 0.04, 0.13, 0.95)
+      elseif themed[name] then f.bg:SetColorTexture(0.06, 0.05, 0.03, 0.96) end
+      themed[name] = style
+    end
+  end
+end
+
+-- ---------- the moments that use the box ----------
+O.On("PLAYER_LEVEL_UP", function(level)
+  local n = Num(Plain(level)) or Level()
+  stage.Notice("Level " .. n .. "!", { Me() .. " reached level " .. stage.Key(n) .. ".", Name() .. " does a small dance about it." }, 6)
+  if Owl.cos.Idle then pcall(Owl.cos.Idle, "dance", 2) end
+end)
+
+local driver = CreateFrame("Frame")
+driver:SetScript("OnUpdate", function(_, e)
+  O.Try("owl notice", function()
+    themeAcc = themeAcc + e
+    if themeAcc >= 1 then themeAcc = 0 Theme() end
+    local now = Now()
+    if not cur then
+      if not queue[1] or Plain(UnitAffectingCombat("player")) == true then return end
+      cur = table.remove(queue, 1)
+      if not box then Build() end
+      box.title:SetText(cur.title)
+      box.text:SetText(cur.text)
+      box:SetHeight(Height(box.text, 40) + 58)
+      local plain = cur.text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+      cur.len, cur.shown, cur.t = #plain, 0, 0
+      cur.till = now + cur.secs + cur.len / 40
+      if box.text.SetAlphaGradient then pcall(box.text.SetAlphaGradient, box.text, 0, 10) end
+      box.mark:Hide()
+      if box.SetAlpha then box:SetAlpha(1) end
+      box:Show()
+      return
+    end
+    cur.t = cur.t + e
+    -- it opens with a small pop, the words write themselves, a mark blinks when they are done, and it fades
+    if box.SetScale then
+      local p = math.min(cur.t / 0.16, 1)
+      box:SetScale(0.7 + 0.3 * p * (2 - p))
+    end
+    if cur.shown < cur.len + 12 then
+      cur.shown = cur.shown + e * 46
+      if box.text.SetAlphaGradient then pcall(box.text.SetAlphaGradient, box.text, math.floor(cur.shown), 10) end
+    else
+      box.mark:Show()
+      box.mark:SetAlpha(0.55 + 0.45 * math.sin(cur.t * 5))
+    end
+    if now >= cur.till then
+      local q = (now - cur.till) / 0.35
+      if q >= 1 then box:Hide() cur = nil
+      elseif box.SetAlpha then box:SetAlpha(1 - q) end
     end
   end)
 end)

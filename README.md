@@ -2,7 +2,7 @@
 
 A talking owl companion for **World of Warcraft: Forever**. He sits on your screen, watches what you do, remembers it, and helps. He has a wardrobe, goals of his own, and he knows your friends' owls.
 
-**Current version: 3.6**
+**Current version: 3.7**
 
 ## Get it
 
@@ -32,7 +32,12 @@ Whenever there is a new version:
 
 That is all. It fetches the newest version from this page and puts it in the right place.
 
-## What is new in 3.6
+## What is new in 3.7
+
+- **A box for the big moments.** Dungeon awards, level-ups and your session recap open in a dark box in the middle of the screen, with the words writing themselves out. Click it to close. `/owl notices` turns it off.
+- **Hover card and windows** now match the new bubble style.
+
+## Earlier, in 3.6
 
 - **Entrances.** Owls swoop, drop, pop, roll or peek their way onto the branch, and fly off when their player leaves. `/owl enter` replays it.
 - **One branch.** Your friends' owls sit along one branch beside yours. `/owl branch` puts them back in a column.
