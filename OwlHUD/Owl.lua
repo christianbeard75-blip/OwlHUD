@@ -1554,6 +1554,61 @@ end
 -- ---------- quick replies to a whisper ----------
 local REPLIES = { "On my way.", "One sec.", "Can't right now, sorry.", "Thanks!" }
 local replyTo, replyUntil = nil, 0
+-- answers that fit what was whispered. Everything lives on one table: this file is near Lua's limit of local names.
+Owl.rep = { guildAsk = nil, set = nil }
+Owl.rep.Guild = function(yes)
+  return function()
+    local ask = Owl.rep.guildAsk
+    if ask and Now() - ask.at < 120 then
+      local fn = yes and _G.AcceptGuild or _G.DeclineGuild
+      if type(fn) == "function" then pcall(fn) end
+      if type(_G.StaticPopup_Hide) == "function" then pcall(_G.StaticPopup_Hide, "GUILD_INVITE") end
+      Owl.rep.guildAsk = nil
+    end
+  end
+end
+-- each: the words to look for (any of them), then up to four answers. First match wins, so the order matters.
+Owl.rep.SETS = {
+  { name = "a guild", need = { "guild" }, any = { "join", "invite", "recruit", "looking for", "want", "interested", "members", "apply" },
+    say = { { "Sure!", Owl.rep.Guild(true) }, { "No thanks!", Owl.rep.Guild(false) }, { "What is the guild like?" }, { "Already in one, thanks." } } },
+  { name = "a duel", any = { "duel", "1v1", "fight me" }, say = { { "You're on." }, { "No thanks." }, { "Maybe later." }, { "After this quest." } } },
+  { name = "a summon", any = { "summon", "summ", "meeting stone", "at the stone" }, say = { { "On my way." }, { "Summon me please." }, { "At the stone." }, { "Two minutes." } } },
+  { name = "being ready", any = { "ready", "rdy", "good to go" }, say = { { "Ready." }, { "One minute." }, { "Need to repair first." }, { "Need to drink first." } } },
+  { name = "a group", any = { "invite", "inv", "group", "party", "dungeon", "lfm", "lfg", "lf1m", "lf2m", "need a", "need 1", "wanna run", "want to run", "come run", "tank", "healer", "dps", "deadmines", "stockade", "gnomeregan", "monastery", "razorfen", "uldaman", "zul'farrak", "maraudon", "shadowfang", "blackfathom", "wailing caverns", "elite quest" },
+    say = { { "Sure, invite me." }, { "Give me two minutes." }, { "Not right now, thanks." }, { "What level range?" } } },
+  { name = "where you are", any = { "where are you", "where r u", "where u at", "where you at", "where are u", "wya", "your location", "which zone" },
+    say = { { function() return "I'm in " .. tostring(Zone()) .. "." end }, { "Coming to you." }, { "Come to me." }, { "One sec." } } },
+  { name = "a trade", any = { "wts", "wtb", "wtt", "sell", "selling", "buy", "buying", "how much", "price", "trade", "for sale", "gold for" }, say = { { "How much?" }, { "Deal." }, { "No thanks." }, { "Not selling, sorry." } } },
+  { name = "help", any = { "help", "can you", "could you", "can u", "boost", "escort", "carry", "give me a hand", "lend a hand" }, say = { { "Sure, on my way." }, { "Give me a few minutes." }, { "Can't right now, sorry." }, { "Where are you?" } } },
+  { name = "thanks", any = { "thanks", "thank you", "thx", "ty", "tyvm", "cheers", "appreciate" }, say = { { "You're welcome!" }, { "Any time." }, { "No problem." }, { "Good luck out there!" } } },
+  { name = "congratulations", any = { "grats", "gratz", "congrats", "gz", "congratulations", "nice one", "well done" }, say = { { "Thanks!" }, { "Finally!" }, { "You're next." }, { "Cheers!" } } },
+  { name = "an apology", any = { "sorry", "my bad", "mb", "oops", "apologies" }, say = { { "No worries." }, { "All good." }, { "It happens." }, { "Ha, fine." } } },
+  { name = "whether you are there", any = { "you there", "u there", "afk", "hello?", "still here", "still there", "alive?" }, say = { { "Here." }, { "Back now." }, { "Was away, sorry." }, { "One sec." } } },
+  { name = "goodbye", any = { "bye", "cya", "see ya", "see you", "gn", "good night", "goodnight", "logging", "gotta go", "later" }, say = { { "See you!" }, { "Good night!" }, { "Thanks for the run." }, { "Same time tomorrow?" } } },
+  { name = "hello", any = { "hi", "hey", "hello", "yo", "sup", "hiya", "heya", "howdy", "wassup", "what's up", "whats up" }, say = { { "Hey!" }, { "Hi, what's up?" }, { "Busy right now, one sec." }, { "Good to see you." } } },
+  { name = "a question", question = true, say = { { "Yes." }, { "No." }, { "Not sure." }, { "One sec." } } },
+}
+-- words are matched whole, so "ty" does not fire inside "party" and "hi" not inside "this"
+Owl.rep.Has = function(padded, phrase, low)
+  if phrase:find("[%?']") or phrase:find("%d") then return low:find(phrase, 1, true) ~= nil end
+  return padded:find(" " .. phrase .. " ", 1, true) ~= nil
+end
+Owl.rep.Pick = function(msg)
+  if type(msg) ~= "string" then return nil end
+  local low = msg:lower()
+  local padded = " " .. low:gsub("[%.,!;:%?%(%)\"]", " "):gsub("%s+", " ") .. " "
+  for _, set in ipairs(Owl.rep.SETS) do
+    local ok = true
+    for _, word in ipairs(set.need or {}) do if not Owl.rep.Has(padded, word, low) then ok = false end end
+    if ok and set.any then
+      ok = false
+      for _, word in ipairs(set.any) do if Owl.rep.Has(padded, word, low) then ok = true break end end
+    end
+    if ok and set.question then ok = low:find("?", 1, true) ~= nil end
+    if ok then return set end
+  end
+  return nil
+end
 local replies = CreateFrame("Frame", "OwlHUDReplies", UIParent)
 replies:SetSize(330, 46)
 replies:SetPoint("TOPLEFT", pal.bubble, "BOTTOMLEFT", 0, -4)
@@ -1574,20 +1629,52 @@ for i = 1, #REPLIES do
   b:SetScript("OnEnter", function(self) self.bg:SetColorTexture(0.28, 0.2, 0.06, 0.95) end)
   b:SetScript("OnLeave", function(self) self.bg:SetColorTexture(0.05, 0.04, 0.02, 0.9) end)
   b:SetScript("OnClick", function()
-    if replyTo and SendChatMessage then
-      local sent = pcall(SendChatMessage, REPLIES[i], "WHISPER", nil, replyTo)
-      O.Print(sent and ("told " .. replyTo:gsub("%-.*$", "") .. ": " .. REPLIES[i]) or "the game would not send that whisper.")
+    local pick = Owl.rep.set and Owl.rep.set[i]
+    local words = pick and pick[1] or REPLIES[i]
+    if type(words) == "function" then local okW, made = pcall(words) words = okW and made or nil end
+    if pick and pick[2] then O.Try("owl reply", pick[2]) end
+    if replyTo and SendChatMessage and type(words) == "string" then
+      local sent = pcall(SendChatMessage, words, "WHISPER", nil, replyTo)
+      O.Print(sent and ("told " .. replyTo:gsub("%-.*$", "") .. ": " .. words) or "the game would not send that whisper.")
     end
     replies:Hide()
   end)
+  replies.buttons = replies.buttons or {}
+  replies.buttons[i] = b
 end
-O.On("CHAT_MSG_WHISPER", function(_, sender)
-  sender = Plain(sender)
+Owl.rep.Show = function(sender, label, set, seconds)
+  replyTo, replyUntil = sender, Now() + (seconds or 30)
+  Owl.rep.set = set
+  replies.label:SetText(label)
+  for i, b in ipairs(replies.buttons) do
+    local words = (set and set[i] and set[i][1]) or (not set and REPLIES[i]) or nil
+    if type(words) == "function" then local okW, made = pcall(words) words = okW and made or nil end
+    if words then b.label:SetText(words) b:Show() else b:Hide() end
+  end
+  replies:Show()
+end
+-- a guild invite: Sure! and No thanks! answer the invite itself and tell the person who sent it
+O.On("GUILD_INVITE_REQUEST", function(inviter, guild)
+  inviter, guild = Plain(inviter), Plain(guild)
+  if type(inviter) ~= "string" or inviter == "" or not OwlHUDDB.tips or OwlHUDDB.replies == false then return end
+  Owl.rep.guildAsk = { from = Owl.First(inviter), at = Now() }
+  local set = Owl.rep.SETS[1].say
+  Owl.rep.Show(Owl.Addr(Owl.First(inviter)), inviter .. " invites you to " .. (type(guild) == "string" and guild ~= "" and guild or "a guild") .. ":", { set[1], set[2] }, 60)
+end)
+O.On("CHAT_MSG_WHISPER", function(msg, sender)
+  sender, msg = Plain(sender), Plain(msg)
   if type(sender) ~= "string" or sender == "" or not OwlHUDDB.tips or OwlHUDDB.replies == false then return end
   if pal.menu and pal.menu:IsShown() then return end
-  replyTo, replyUntil = sender, Now() + 30
-  replies.label:SetText("Reply to " .. sender:gsub("%-.*$", "") .. ":")
-  replies:Show()
+  local short = sender:gsub("%-.*$", "")
+  local ask = Owl.rep.guildAsk
+  if ask and Now() - ask.at < 120 and ask.from == Owl.First(short) then
+    local set = Owl.rep.SETS[1].say
+    Owl.rep.Show(sender, short .. " invited you to a guild:", { set[1], set[2] }, 60)
+    return
+  end
+  local set = Owl.rep.Pick(msg)
+  if set then Owl.rep.Show(sender, set.need and (short .. " asks about a guild:") or ("Reply to " .. short .. ":"), set.say, 45)
+  else Owl.rep.Show(sender, "Reply to " .. short .. ":", nil, 30) end
 end)
 O.commands.replies = function()
   OwlHUDDB.replies = OwlHUDDB.replies == false
@@ -6629,6 +6716,7 @@ local ACTIONS = { { "Wardrobe", "wardrobe" }, { "His goals", "goals" }, { "Rare 
   { "Pat him", "pat" }, { "Size up target", "pull" }, { "Quest route", "route" }, { "Still to do", "needs" }, { "Bag value", "worth" }, { "Gear hunt", "hunt" }, { "Yearbook", "yearbook" },
   { "My characters", "family" }, { "A Forever tip", "tip" }, { "Missing flights", "flights" }, { "Groups forming", "lfg" }, { "Reputation", "rep" }, { "Spell value", "mana" }, { "Move things", "unlock" }, { "All commands", "owl" }, { "Report for Claude", "report" } }
 
+Owl.OPTIONS, Owl.ACTIONS = OPTIONS, ACTIONS
 -- these answer with a list in the chat window, which is easy to miss
 local IN_CHAT, chatHintSaid = {}, false
 for _, name in ipairs({ "goals", "pals", "party", "notes", "quirks", "where", "post", "journal", "me", "plan", "stats", "pace", "quests", "gold", "collection", "records", "bond", "rival", "route",
@@ -7808,6 +7896,7 @@ O.On("ZONE_CHANGED_INDOORS", SeePlace)
 
 Owl.cos = { Cos = Cos, Worn = Worn, Unlock = Unlock, Check = CheckGoals, Fill = FillGoals, Progress = Progress, ITEM = ITEM, GOAL = GOAL, Look = LookText, luck = luck, RARE = RARE, DungeonHere = DungeonHere, TIERS = TIERS, Shown = Shown, Body = Body, BodyOpen = BodyOpen, OwlFile = OwlFile, PLUMES = PLUMES, heldSets = heldSets, stacks = { pal = palStack, perch = perchStack }, ORDER = {} }
 for i, it in ipairs(ITEMS) do Owl.cos.ORDER[i] = it[1] end
+Owl.cos.Stack, Owl.cos.Dress = Stack, Dress
 do
 -- ---------- friends' owls ----------
 local friends, friendOrder, slots = {}, {}, {}
@@ -7823,7 +7912,7 @@ local function FriendFrame(i)
   f.stack.aura:SetPoint("CENTER", f, "CENTER", 0, 0)
   f.label = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   -- the name sits beside each owl, not under it, so a column of them stays tidy and the words never run together
-  f.label:SetPoint("RIGHT", f, "LEFT", -5, 0)
+  f.label:SetPoint("RIGHT", f, "LEFT", -9, 0)
   if f.label.SetJustifyH then f.label:SetJustifyH("RIGHT") end
   if f.label.SetSpacing then f.label:SetSpacing(2) end
   f.emote = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -7857,7 +7946,7 @@ local function LayoutFriends()
         f.label:SetText(short)
       else
         Dress(f.stack, look, true)
-        f.label:SetPoint("RIGHT", f, "LEFT", -5, 0)
+        f.label:SetPoint("RIGHT", f, "LEFT", -12, 0)
         if f.label.SetJustifyH then f.label:SetJustifyH("RIGHT") end
         -- gold: the owl's name. grey under it: whose owl it is, and where they are when they are not with you
         local under = tostring(data.owl):find(short, 1, true) and "" or short
@@ -8125,13 +8214,14 @@ local function PoseFriend(f)
   f.blinkAt = f.t + 3
   if dead then f.hop = 0 else f.hop = 1 end
 end
--- Where each friend's owl sits. Out in the world: a column at his shoulder. In a dungeon: a row beside him, all on
--- one line of branches. Now and then, when grouped and nothing is happening, one flies over to sit with him a moment.
+-- Where each friend's owl sits: one column in line with him, every owl his size (or, with /owl branch, a row beside
+-- him on one line of branches). Now and then, when grouped and nothing is happening, one flies over to sit with him.
 local VISIT_OUT, VISIT_SIT, VISIT_BACK = 0.9, 4, 0.9
 local function PlaceFriend(f, i, w, colDown, e)
   local row = slots.row
-  local size = w * (row and 0.62 or 0.47)
-  local step = (i - 1) * (size + w * 0.06)
+  -- every owl is the size of yours. Out of a row they stand in one column in line with him, a small gap between each.
+  local size = w
+  local step = i * (size + w * 0.14)
   local vx, vy = 0, 0
   if f.visit then
     f.visit = f.visit + e
@@ -8153,8 +8243,9 @@ local function PlaceFriend(f, i, w, colDown, e)
     else
       local ease = p * p * (3 - 2 * p)
       s.perch:Hide()
-      vx = (8 + size * 0.5) * ease
-      vy = (colDown and (step - (w - size)) or -step) * ease + ((p < 1) and math.sin(p * math.pi) * size * 0.35 or 0)
+      -- it leaves the column and lands at his left side, level with him
+      vx = -size * 0.95 * ease
+      vy = (colDown and step or -step) * ease + ((p < 1) and math.sin(p * math.pi) * size * 0.35 or 0)
       local want = "owl.tga"
       if p < 1 then want = (math.floor(t / 0.14) % 2 == 0) and "owl_fly1.tga" or "owl_fly2.tga" end
       if want ~= f.face then
@@ -8172,11 +8263,17 @@ local function PlaceFriend(f, i, w, colDown, e)
     local okS, ox, oy = pcall(Owl.stage.Offset, f, i, size, e)
     if okS and type(ox) == "number" and type(oy) == "number" then vx, vy = vx + ox, vy + oy end
   end
+  -- when he talks he grows, and the others shuffle along to give him room
+  local room = 0
+  if Owl.stage and Owl.stage.Room then
+    local okR, r = pcall(Owl.stage.Room, row and "left" or (colDown and "down" or "up"))
+    if okR and type(r) == "number" then room = r end
+  end
   f:SetSize(size, size)
   f:ClearAllPoints()
-  if row then f:SetPoint("BOTTOMRIGHT", perchFrame, "BOTTOMLEFT", 2 - (i - 1) * size * 0.9 + vx, vy)
-  elseif colDown then f:SetPoint("TOPRIGHT", perchFrame, "TOPLEFT", -8 + vx, -step + vy)
-  else f:SetPoint("BOTTOMRIGHT", perchFrame, "BOTTOMLEFT", -8 + vx, step + vy) end
+  if row then f:SetPoint("BOTTOMRIGHT", perchFrame, "BOTTOMLEFT", 2 - (i - 1) * size * 0.9 - room + vx, vy)
+  elseif colDown then f:SetPoint("TOP", perchFrame, "TOP", vx, -step - room + vy)
+  else f:SetPoint("BOTTOM", perchFrame, "BOTTOM", vx, step + room + vy) end
   return size
 end
 -- once a frame: are we in a dungeon (checked every couple of seconds), and is it time for a visit
@@ -8184,7 +8281,7 @@ local function FriendScene(now, fancy)
   if now >= (slots.rowAt or 0) then
     slots.rowAt = now + 2
     local inside, kind = Q("IsInInstance")
-    local row = ((inside and kind == "party") or OwlHUDDB.friendColumn ~= true) and true or false
+    local row = OwlHUDDB.friendRow == true
     slots.inside = (inside and kind == "party") and true or false
     if row ~= (slots.row or false) then slots.row = row LayoutFriends() end
   end
@@ -8266,6 +8363,11 @@ local function Motion(e, dozing, dead)
     elseif idle.kind == "bow" then
       local k = math.sin(p * math.pi)
       dy, r, sy = -0.04 * k, -0.22 * k, sy - 0.06 * k
+    elseif idle.kind == "spin" then r = p * math.pi * 2
+    elseif idle.kind == "postoff" then
+      -- off with a letter, and back again
+      local k = math.sin(p * math.pi)
+      dx, dy, r = -k * 2.6, k * 1.1, (p < 0.5 and 0.25 or -0.25) * k
     elseif idle.kind == "dropin" then
       -- falls onto his perch and bounces
       if p < 0.55 then local q = p / 0.55 dy = (1 - q * q) * 1.7
@@ -8411,8 +8513,8 @@ local function LiveStep(e)
       for _, tex in ipairs({ icon, perchStack.cloak, perchStack.neck, perchStack.extra, perchStack.gem, perchStack.crest, perchStack.mark, perchFrame.hat }) do tex:SetRotation(r) end
     end
   end
-  -- friends' owls sit in a column at his left shoulder, facing him. Two of them stand as tall as he does.
-  -- The column hangs down from his head when he is in the top half of the screen, and climbs from his feet otherwise.
+  -- friends' owls stand in one column with him, each as big as he is.
+  -- The column hangs down below him when he is in the top half of the screen, and climbs above him otherwise.
   local colDown = false
   do
     local okC, _, cy = pcall(perchFrame.GetCenter, perchFrame)
@@ -8445,6 +8547,9 @@ local function LiveStep(e)
           if p >= 1 then f.act = nil
           elseif f.act == "talk" then hop, rot = hop + math.abs(math.sin(p * math.pi * 6)) * 0.06, math.sin(p * math.pi * 6) * 0.05
           elseif f.act == "cheer" then hop = hop + math.abs(math.sin(p * math.pi * 5)) * 0.2 * (1 - p * 0.4)
+          elseif f.act == "dance" then hop, rot = hop + math.abs(math.sin(p * math.pi * 6)) * 0.1, math.sin(p * math.pi * 6) * 0.14
+          elseif f.act == "bow" then rot = -math.sin(p * math.pi) * 0.3
+          elseif f.act == "spin" then rot = p * math.pi * 2
           elseif f.act == "tilt" then rot = math.sin(p * math.pi) * 0.16
           elseif f.act == "wiggle" then rot = math.sin(p * math.pi * 4) * 0.08 * (1 - p) end
         elseif fancy and not f.visit and not f.busy and f.t >= (f.idleAt or 6) then
@@ -11450,6 +11555,10 @@ local function Announce(dungeon)
   end
   O.Print("|cffffd100" .. (#parts == 0 and "A clean run" or "Awards") .. "|r  " .. dungeon)
   for _, part in ipairs(parts) do print("   " .. part) end
+  if type(OwlHUDDB.awardLog) ~= "table" then OwlHUDDB.awardLog = {} end
+  local log = OwlHUDDB.awardLog
+  log[#log + 1] = { dungeon = dungeon, line = #parts == 0 and "A clean run. Nobody died." or table.concat(parts, ". ") .. ".", at = Clock() }
+  while #log > 12 do table.remove(log, 1) end
   Say("awards" .. dungeon .. Now(), line, 0, "uc")
   if Owl.cos then
     if Owl.cos.Idle then pcall(Owl.cos.Idle, "cheer", 1.2) end
@@ -11510,6 +11619,10 @@ watcher:SetScript("OnUpdate", function(_, e)
     end
     if leftAt and not inside and Now() - leftAt >= 8 then
       leftAt = nil
+      if not dead then
+        local run = Run()
+        if run and not run.counted and Clock() - (Num(run.start) or Clock()) >= 480 then run.counted = true if Owl.onRunDone then pcall(Owl.onRunDone) end end
+      end
       if not dead and OwlHUDDB.awards ~= false then Begin(false) end
     end
     wasInside = inside
@@ -11680,6 +11793,7 @@ local function Recap()
   end
   return out, played
 end
+Owl.Recap = Recap
 O.commands.recap = function()
   local lines = Recap()
   if not lines then O.Print("nothing to recap yet.") return end
@@ -12136,6 +12250,7 @@ local function Reset(f)
 end
 local function Landed(f, i, data)
   Reset(f)
+  f.decT = 1
   Face(f, "owl_happy.tga", 1.4)
   f.hop = 1
   f.flourish = Now() + 0.45
@@ -12146,9 +12261,39 @@ local function Landed(f, i, data)
   end
   if cos.Idle then pcall(cos.Idle, "hop", 0.7) end
 end
+-- a small dark plate behind each friend's name, hugging the words, with a thin mark that tells you how they are
+local function CardStep(f, data, size)
+  if not f.plate then
+    f.plate = CreateFrame("Frame", nil, f)
+    f.plate.panel = Panel(f.plate, "BACKGROUND")
+    f.plate.panel.Color(0.0, 0.02, 0.09, 0.5)
+    f.plate.mark = f.plate:CreateTexture(nil, "ARTWORK")
+    -- the name moves onto the plate, so it is drawn over it
+    if f.label.SetParent then pcall(f.label.SetParent, f.label, f.plate) end
+  end
+  local on = not slots.row and OwlHUDDB.friendCards ~= false and not f.busy
+  if not on then f.plate.panel.Shown(false) f.plate.mark:Hide() return end
+  local tw = Num(Call0(f.label, "GetStringWidth")) or 80
+  local th = Num(Call0(f.label, "GetStringHeight")) or 22
+  tw, th = math.min(tw, 170), math.min(th, 40)
+  f.plate:ClearAllPoints()
+  f.plate:SetPoint("RIGHT", f, "LEFT", -2, 0)
+  f.plate:SetSize(tw + 16, th + 8)
+  f.plate.mark:ClearAllPoints()
+  f.plate.mark:SetPoint("RIGHT", f.plate, "RIGHT", -3, 0)
+  f.plate.mark:SetSize(2, th)
+  -- the mark: pale blue, amber and pulsing when hurt, grey when down, faint when they are elsewhere
+  if data.dead then f.plate.mark:SetColorTexture(0.6, 0.6, 0.65, 0.8)
+  elseif data.low then f.plate.mark:SetColorTexture(1, 0.6, 0.2, 0.5 + 0.5 * math.abs(math.sin(Now() * 4)))
+  elseif data.far then f.plate.mark:SetColorTexture(0.45, 0.7, 1, 0.35)
+  else f.plate.mark:SetColorTexture(0.5, 0.9, 1, 0.85) end
+  f.plate.panel.Shown(true)
+  f.plate.mark:Show()
+end
 local function Decorate(f, data, size)
   local info = Info(f.who, data)
   local s = f.stack
+  CardStep(f, data, size)
   -- the name in their class colour
   local r, g, b = ClassColor(info.class)
   if f.label.SetTextColor then f.label:SetTextColor(r or 1, g or 0.82, b or 0) end
@@ -12175,10 +12320,10 @@ local function Decorate(f, data, size)
     f.badgeText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     f.badgeText:SetPoint("CENTER", f.badge, "CENTER", 0, 0)
   end
-  if info.level and not f.busy then
+  if info.level and not f.busy and not (data.far and data.note and not slots.row) then
     f.badge:ClearAllPoints()
-    f.badge:SetPoint("CENTER", f, "BOTTOMLEFT", size * 0.14, size * 0.2)
-    f.badge:SetSize(size * 0.4, size * 0.4)
+    f.badge:SetPoint("CENTER", f, "BOTTOMLEFT", size * 0.1, size * 0.14)
+    f.badge:SetSize(size * 0.27, size * 0.27)
     f.badgeText:SetText(tostring(info.level))
     if f.badgeText.SetTextColor then f.badgeText:SetTextColor(r or 1, g or 0.82, b or 0) end
     f.badge:Show() f.badgeText:Show()
@@ -12221,7 +12366,8 @@ stage.Offset = function(f, i, size, e)
     end
   end
   f.decT = (f.decT or 0) + e
-  if f.decT >= 0.5 then f.decT = 0 Decorate(f, data, size) end
+  if f.decT >= 0.5 then f.decT = 0 Decorate(f, data, size)
+  elseif f.plate and (data.low or f.busy) then CardStep(f, data, size) end
   local ox, oy = 0, 0
   local fly = (math.floor(now / 0.13) % 2 == 0) and "owl_fly1.tga" or "owl_fly2.tga"
   if data.leaving then
@@ -12316,6 +12462,7 @@ end
 -- ---------- your own owl: grand wings, the umbrella, his entrances, and the mark on his bubble ----------
 local MY_ENTER = { { "dropin", 1.1 }, { "popin", 0.9 }, { "rollin", 1.2 }, { "swoopin", 1.2 }, { "peekin", 1.6 } }
 local myExtras, myFlourish, enteredAt = nil, nil, -100
+stage.Flourish = function(secs) myFlourish = Now() + secs stage.myLandAt = Now() end
 local function Enter()
   if not OwlHUDDB.fancy or OwlHUDDB.entrances == false or not cos.Idle then return end
   if Q("UnitIsDeadOrGhost", "player") or Now() - enteredAt < 4 then return end
@@ -12341,9 +12488,9 @@ O.commands.enter = function(arg)
   Enter()
 end
 O.commands.branch = function()
-  OwlHUDDB.friendColumn = OwlHUDDB.friendColumn ~= true
+  OwlHUDDB.friendRow = OwlHUDDB.friendRow ~= true
   slots.rowAt = 0
-  O.Print("friends' owls sit " .. (OwlHUDDB.friendColumn and "in a column at his shoulder" or "along one branch beside him"))
+  O.Print("friends' owls sit " .. (OwlHUDDB.friendRow and "along one branch beside him" or "in a column with him"))
 end
 O.commands.rain = function()
   stage.forceRain = not stage.forceRain
@@ -12555,4 +12702,872 @@ driver:SetScript("OnUpdate", function(_, e)
     end
   end)
 end)
+end
+
+-- =====================================================================================
+-- The flock: a leaderboard between friends, a challenge you share each week, owl post, and tricks they can see.
+-- =====================================================================================
+do
+local stage = Owl.stage
+local friends = Owl.cos.friends
+local function Clean(text, limit) return (tostring(text):gsub("[|;%c]", ""):sub(1, limit)) end
+local function Whisper(who, kind, extra)
+  if OwlHUDDB.social == false or not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return false end
+  return (pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", kind .. "|" .. Name() .. "|" .. tostring(extra or ""), "WHISPER", Owl.Addr(who)))
+end
+local function Gold(copper)
+  copper = math.floor(Num(copper) or 0)
+  local g, s = math.floor(copper / 10000), math.floor(copper % 10000 / 100)
+  if g >= 100 then return g .. "g" end
+  if g > 0 then return g .. "g " .. s .. "s" end
+  return s .. "s"
+end
+
+-- ---------- what he counts for you each week ----------
+local function WeekId() return math.floor((Clock() - 4 * 86400) / 604800) end   -- weeks turn over on Tuesday
+local function Week()
+  local rec = Owl.Record()
+  local id = WeekId()
+  if type(rec.week) ~= "table" or rec.week.id ~= id then
+    if type(rec.week) == "table" then rec.lastWeek = rec.week end
+    rec.week = { id = id, gold = 0, kills = 0, deaths = 0, runs = 0, levels = 0 }
+  end
+  return rec.week
+end
+local lastMoney = nil
+O.On("PLAYER_MONEY", function()
+  local now = Owl.Money and Owl.Money()
+  if type(now) ~= "number" then return end
+  if lastMoney and now > lastMoney then local w = Week() w.gold = (Num(w.gold) or 0) + (now - lastMoney) end
+  lastMoney = now
+end)
+O.On("PLAYER_ENTERING_WORLD", function() local now = Owl.Money and Owl.Money() if type(now) == "number" then lastMoney = now end Week() end)
+O.On("PLAYER_DEAD", function() local w = Week() w.deaths = (Num(w.deaths) or 0) + 1 end)
+O.On("PLAYER_LEVEL_UP", function() local w = Week() w.levels = (Num(w.levels) or 0) + 1 end)
+-- kills are counted from the game's own "dies, you gain experience" line: this game does not let him read the combat log
+O.On("CHAT_MSG_COMBAT_XP_GAIN", function(msg)
+  msg = Plain(msg)
+  if type(msg) == "string" and msg:find("dies", 1, true) then local w = Week() w.kills = (Num(w.kills) or 0) + 1 end
+end)
+Owl.onRunDone = function() local w = Week() w.runs = (Num(w.runs) or 0) + 1 end
+
+-- ---------- telling the flock, and hearing from it ----------
+local function Flock()
+  if type(OwlHUDDB.flock) ~= "table" then OwlHUDDB.flock = {} end
+  return OwlHUDDB.flock
+end
+local function MyLine()
+  local w = Week()
+  return table.concat({ 1, w.id, Level(), math.floor(Num(w.gold) or 0), Num(w.kills) or 0, Num(w.deaths) or 0, Num(w.runs) or 0, Num(w.levels) or 0, Owl.BondLevel and Owl.BondLevel() or 1 }, ";")
+end
+local toldAt, allAt = {}, 0
+local function Tell(who, force)
+  if not force and toldAt[who] and Now() - toldAt[who] < 120 then return end
+  toldAt[who] = Now()
+  Whisper(who, "FLK", MyLine())
+end
+local function TellAll() for who in pairs(friends) do Tell(who, true) end end
+
+-- ---------- the challenge of the week: the same one for everybody, worked out from the week itself ----------
+local CHALLENGES = {
+  { key = "kills", goal = 400, text = "Defeat 400 enemies between you" },
+  { key = "runs", goal = 5, text = "Finish 5 dungeon runs between you" },
+  { key = "gold", goal = 1000000, text = "Earn 100 gold between you", money = true },
+  { key = "levels", goal = 6, text = "Gain 6 levels between you" },
+  { key = "kills", goal = 700, text = "Defeat 700 enemies between you" },
+  { key = "gold", goal = 2000000, text = "Earn 200 gold between you", money = true },
+}
+local function Challenge() return CHALLENGES[WeekId() % #CHALLENGES + 1] end
+local function Members()
+  -- you, and every friend whose owl has reported in this week
+  local w = Week()
+  local out = { { name = Me(), me = true, level = Level(), gold = Num(w.gold) or 0, kills = Num(w.kills) or 0, deaths = Num(w.deaths) or 0, runs = Num(w.runs) or 0, levels = Num(w.levels) or 0, bond = Owl.BondLevel and Owl.BondLevel() or 1 } }
+  for name, m in pairs(Flock()) do
+    if type(m) == "table" and name ~= Me() then
+      local fresh = m.week == w.id
+      out[#out + 1] = { name = name, level = Num(m.level) or 0, bond = Num(m.bond) or 0, gold = fresh and (Num(m.gold) or 0) or 0, kills = fresh and (Num(m.kills) or 0) or 0,
+        deaths = fresh and (Num(m.deaths) or 0) or 0, runs = fresh and (Num(m.runs) or 0) or 0, levels = fresh and (Num(m.levels) or 0) or 0, at = m.at }
+    end
+  end
+  return out
+end
+local function Progress()
+  local c = Challenge()
+  local total = 0
+  for _, m in ipairs(Members()) do total = total + (m[c.key] or 0) end
+  return c, total
+end
+local function CheckChallenge()
+  local c, total = Progress()
+  local rec = Owl.Record()
+  if total >= c.goal and rec.challengeDone ~= WeekId() and #Members() >= 2 then
+    rec.challengeDone = WeekId()
+    OwlHUDDB.feathers = (Num(OwlHUDDB.feathers) or 0) + 1
+    stage.Notice("Flock challenge complete!", { stage.Key(c.text) .. ".", "A flock feather for everyone. You have " .. stage.Key(OwlHUDDB.feathers) .. " now." }, 9)
+    if Owl.cos.Idle then pcall(Owl.cos.Idle, "dance", 2) end
+    for who in pairs(friends) do if Owl.cos.Hop then pcall(Owl.cos.Hop, who, "Hoo!", "cheer") end end
+  end
+end
+
+Owl.flockApi = { Members = Members, Progress = Progress, Gold = Gold }
+-- ---------- the board ----------
+local board
+local COLS = {
+  { "Gold earned", "gold", true }, { "Kills", "kills" }, { "Dungeon runs", "runs" },
+  { "Levels gained", "levels" }, { "Deaths", "deaths" }, { "Level", "level" },
+}
+local function Fill()
+  local members = Members()
+  local c, total = Progress()
+  local done = total >= c.goal
+  board.sub:SetText("This week's challenge: " .. stage.Key(c.text) .. "\n" .. (done and "|cff60ff60Done!|r  " or "") .. (c.money and (Gold(total) .. " of " .. Gold(c.goal)) or (total .. " of " .. c.goal))
+    .. "     Flock feathers: " .. stage.Key(Num(OwlHUDDB.feathers) or 0))
+  for i, col in ipairs(COLS) do
+    table.sort(members, function(a, b) if a[col[2]] ~= b[col[2]] then return a[col[2]] > b[col[2]] end return a.name < b.name end)
+    local lines = { "|cff8cccff" .. col[1] .. "|r" }
+    for rank = 1, math.min(#members, 5) do
+      local m = members[rank]
+      local value = col[3] and Gold(m[col[2]]) or tostring(m[col[2]])
+      local name = m.me and ("|cffffffff" .. m.name .. "|r") or m.name
+      lines[#lines + 1] = (rank == 1 and m[col[2]] > 0 and "|cffffd24a" or "|cffc8c8c8") .. rank .. ". " .. name .. "  " .. value .. "|r"
+    end
+    board.cols[i]:SetText(table.concat(lines, "\n"))
+  end
+  board.foot:SetText(#members < 2 and "Nobody else has reported in yet. Friends with OwlHUD 3.8 show up here once their owl has met yours."
+    or "This week only, apart from Level. Updates whenever your owls meet. Click to close.")
+end
+local function ShowBoard()
+  if not board then
+    board = CreateFrame("Frame", "OwlHUDBoard", UIParent)
+    board:SetSize(560, 330)
+    board:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
+    if board.SetFrameStrata then board:SetFrameStrata("DIALOG") end
+    board.panel = stage.Panel(board, "BACKGROUND")
+    board.panel.Color(0.0, 0.02, 0.09, 0.9)
+    board.title = board:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    board.title:SetPoint("TOP", board, "TOP", 0, -14)
+    board.title:SetTextColor(0.55, 0.8, 1)
+    board.title:SetText("The Flock")
+    board.sub = board:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    board.sub:SetPoint("TOP", board.title, "BOTTOM", 0, -8)
+    if board.sub.SetSpacing then board.sub:SetSpacing(3) end
+    board.cols = {}
+    for i = 1, #COLS do
+      local fs = board:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+      fs:SetPoint("TOPLEFT", board, "TOPLEFT", 26 + ((i - 1) % 3) * 178, -88 - math.floor((i - 1) / 3) * 108)
+      if fs.SetJustifyH then fs:SetJustifyH("LEFT") end
+      if fs.SetSpacing then fs:SetSpacing(3) end
+      board.cols[i] = fs
+    end
+    board.foot = board:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    board.foot:SetPoint("BOTTOM", board, "BOTTOM", 0, 12)
+    board.foot:SetWidth(520)
+    if board.EnableMouse then
+      board:EnableMouse(true)
+      board:SetScript("OnMouseUp", function(self) self:Hide() end)
+    end
+    board:Hide()
+  end
+  if board:IsShown() then board:Hide() return end
+  Fill()
+  board:Show()
+  TellAll()
+end
+O.commands.board = ShowBoard
+O.commands.flock = ShowBoard
+
+-- ---------- owl post: he already carries letters and keeps them until they are delivered. Here it gains its flight. ----------
+local postBefore = O.commands.post
+O.commands.post = function(arg, raw)
+  if postBefore then postBefore(arg, raw) end
+  if tostring(raw or arg or ""):match("^%S+%s+.+$") then
+    if stage.Flourish then stage.Flourish(1.6) end
+    if Owl.cos.Idle then pcall(Owl.cos.Idle, "postoff", 1.6) end
+  end
+end
+
+-- ---------- tricks your friends can see ----------
+local TRICKS = { dance = { "dance", 2 }, bow = { "bow", 1.4 }, spin = { "spin", 1 }, cheer = { "cheer", 1.4 }, wave = { "wiggle", 1.2 } }
+local TRICK_NAMES = { "dance", "bow", "spin", "cheer", "wave" }
+local trickAt = -100
+O.commands.show = function(arg)
+  local kind = TRICKS[arg or ""] and arg or TRICK_NAMES[math.random(#TRICK_NAMES)]
+  if Now() - trickAt < 3 then return end
+  trickAt = Now()
+  local t = TRICKS[kind]
+  if Owl.cos.Idle then pcall(Owl.cos.Idle, t[1], t[2]) end
+  if Owl.net then pcall(Owl.net.Send, "TRICK", kind) end
+  for who, data in pairs(friends) do if data.far then Whisper(who, "TRICK", kind) end end
+  if arg == "" or not TRICKS[arg or ""] then O.Print("tricks: /owl show dance, bow, spin, cheer or wave. Your friends see it on their screens.") end
+end
+
+local netBefore = Owl.onNet
+local seenTrick, seenPost = {}, {}
+Owl.onNet = function(kind, sender, owl, extra)
+  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if kind == "HELLO" or kind == "HI" then
+    Tell(sender)
+  elseif kind == "FLK" and type(extra) == "string" then
+    local v, week, level, gold, kills, deaths, runs, levels, bond = extra:match("^(%d+);(%-?%d+);(%d+);(%d+);(%d+);(%d+);(%d+);(%d+);(%d+)")
+    if not v then return end
+    local flock = Flock()
+    local n = 0
+    for _ in pairs(flock) do n = n + 1 end
+    if not flock[sender] and n >= 12 then return end
+    flock[sender] = { week = tonumber(week), level = tonumber(level), gold = tonumber(gold), kills = tonumber(kills), deaths = tonumber(deaths), runs = tonumber(runs), levels = tonumber(levels), bond = tonumber(bond), at = Clock() }
+    Tell(sender)
+    CheckChallenge()
+    if board and board:IsShown() then Fill() end
+  elseif kind == "POST" and type(extra) == "string" and (friends[sender] or Flock()[sender]) then
+    -- the letter itself is kept by the post office above; this opens it in the box
+    local id, text = extra:match("^(%d+),(.+)$")
+    if not id then return end
+    local key = sender .. ":" .. id
+    if seenPost[key] and Now() - seenPost[key] < 600 then return end
+    seenPost[key] = Now()
+    stage.Notice("Owl post from " .. sender, { Clean(text, 120) }, 10)
+  elseif kind == "TRICK" and TRICKS[extra or ""] and friends[sender] then
+    if seenTrick[sender] and Now() - seenTrick[sender] < 2 then return end
+    seenTrick[sender] = Now()
+    if Owl.cos.Hop then pcall(Owl.cos.Hop, sender, nil, TRICKS[extra][1]) end
+  end
+end
+
+-- every few minutes, and whenever something worth telling happens, the flock hears your numbers
+local acc = 0
+local ticker = CreateFrame("Frame")
+ticker:SetScript("OnUpdate", function(_, e)
+  acc = acc + e
+  if acc < 5 then return end
+  acc = 0
+  O.Try("owl flock", function()
+    if Now() - allAt >= 300 then allAt = Now() TellAll() CheckChallenge() end
+    -- a new week: say who led the last one, once
+    local rec = Owl.Record()
+    Week()
+    if type(rec.lastWeek) == "table" and not rec.lastWeek.told then
+      rec.lastWeek.told = true
+      local lw = rec.lastWeek
+      if (Num(lw.gold) or 0) + (Num(lw.kills) or 0) > 0 then
+        stage.Notice("A new week for the flock", { "Last week you earned " .. stage.Key(Gold(lw.gold)) .. " and defeated " .. stage.Key(Num(lw.kills) or 0) .. " enemies.", "The board is wiped clean. /owl board" }, 9)
+      end
+    end
+  end)
+end)
+end
+
+-- =====================================================================================
+-- The Roost: one window for everything about the owls. Pages you flip through, a cursor that slides
+-- between them, the same dusk cloth as his speech box.
+-- =====================================================================================
+do
+local stage, cos = Owl.stage, Owl.cos
+local friends = cos.friends
+local W, H = 760, 450
+local BLUE = { 0.55, 0.8, 1 }
+local roost, pages, tabs, current, flipT, flipDir = nil, {}, {}, 1, nil, 1
+local PAGE_NAMES = { "Owls", "Flock", "Post", "Trophies", "Ask", "Settings" }
+local postTo = nil
+
+local function Text(parent, font, r, g, b)
+  local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlight")
+  if r then fs:SetTextColor(r, g, b) end
+  if fs.SetJustifyH then fs:SetJustifyH("LEFT") end
+  if fs.SetSpacing then fs:SetSpacing(3) end
+  return fs
+end
+local function Button(parent, label, width, onClick)
+  local b = CreateFrame("Button", nil, parent)
+  b:SetSize(width, 22)
+  b.panel = stage.Panel(b, "BACKGROUND")
+  b.panel.Color(0.08, 0.14, 0.3, 0.9)
+  b.label = Text(b, "GameFontHighlightSmall")
+  b.label:SetPoint("CENTER", b, "CENTER", 0, 0)
+  b.label:SetText(label)
+  b:SetScript("OnEnter", function(self) self.panel.Color(0.16, 0.3, 0.55, 0.95) end)
+  b:SetScript("OnLeave", function(self) if self.on then self.panel.Color(0.2, 0.4, 0.7, 0.95) else self.panel.Color(0.08, 0.14, 0.3, 0.9) end end)
+  b:SetScript("OnClick", function(self) O.Try("roost button", onClick, self) end)
+  b.Mark = function(on) b.on = on if on then b.panel.Color(0.2, 0.4, 0.7, 0.95) else b.panel.Color(0.08, 0.14, 0.3, 0.9) end end
+  return b
+end
+-- an owl in its outfit, standing in the window
+local function OwlPicture(parent, size, mirror)
+  local holder = CreateFrame("Frame", nil, parent)
+  holder:SetSize(size, size)
+  local s = cos.Stack(holder)
+  s.owl:SetPoint("BOTTOM", holder, "BOTTOM", 0, 0)
+  s.owl:SetSize(size, size)
+  s.aura:SetAllPoints(s.owl)
+  s.perch:SetAllPoints(s.owl)
+  holder.stack, holder.size, holder.mirror, holder.t, holder.blinkAt = s, size, mirror, 0, 2 + math.random() * 3
+  holder.Wear = function(look)
+    s.face = "owl.tga"
+    pcall(cos.Dress, s, type(look) == "table" and look or {}, mirror)
+    holder.plume = s.body and s.body.p or nil
+    s.owl:SetTexture(MEDIA .. cos.OwlFile("owl.tga", holder.plume))
+  end
+  -- it breathes and blinks
+  holder.Live = function(e)
+    holder.t = holder.t + e
+    s.owl:SetPoint("BOTTOM", holder, "BOTTOM", 0, math.sin(holder.t * 2.2) * size * 0.012)
+    if holder.t >= holder.blinkAt then
+      holder.blink = not holder.blink
+      s.owl:SetTexture(MEDIA .. cos.OwlFile(holder.blink and "owl_blink.tga" or "owl.tga", holder.plume))
+      holder.blinkAt = holder.t + (holder.blink and 0.14 or (2.5 + math.random() * 3.5))
+    end
+  end
+  return holder
+end
+local function Ago(at)
+  local s = math.max(0, Clock() - (Num(at) or Clock()))
+  if s < 3600 then return math.floor(s / 60) .. " min ago" end
+  if s < 86400 then return math.floor(s / 3600) .. " h ago" end
+  return math.floor(s / 86400) .. " d ago"
+end
+
+-- ---------- page 1: the owls ----------
+local function BuildOwls(page)
+  page.mine = OwlPicture(page, 170, false)
+  page.mine:SetPoint("TOPLEFT", page, "TOPLEFT", 30, -14)
+  page.name = Text(page, "GameFontNormalHuge", 1, 0.85, 0.4)
+  page.name:SetPoint("TOPLEFT", page.mine, "BOTTOMLEFT", 0, -8)
+  page.hearts = {}
+  for i = 1, 7 do
+    local h = page:CreateTexture(nil, "ARTWORK")
+    h:SetSize(18, 18)
+    h:SetPoint("TOPLEFT", page.name, "BOTTOMLEFT", (i - 1) * 20, -6)
+    page.hearts[i] = h
+  end
+  page.about = Text(page, "GameFontHighlightSmall")
+  page.about:SetPoint("TOPLEFT", page.name, "BOTTOMLEFT", 0, -32)
+  page.about:SetWidth(210)
+  page.head = Text(page, "GameFontNormal", BLUE[1], BLUE[2], BLUE[3])
+  page.head:SetPoint("TOPLEFT", page, "TOPLEFT", 300, -14)
+  page.head:SetText("Beside him now")
+  page.none = Text(page, "GameFontDisable")
+  page.none:SetPoint("TOPLEFT", page.head, "BOTTOMLEFT", 0, -12)
+  page.none:SetWidth(330)
+  page.none:SetText("No friends' owls about.\nThey perch here whenever a friend with OwlHUD is online.")
+  page.cards = {}
+  for i = 1, 4 do
+    local c = CreateFrame("Button", nil, page)
+    c:SetSize(420, 62)
+    c:SetPoint("TOPLEFT", page.head, "BOTTOMLEFT", -6, -8 - (i - 1) * 68)
+    c.panel = stage.Panel(c, "BACKGROUND")
+    c.panel.Color(0.06, 0.1, 0.22, 0.75)
+    c.owl = OwlPicture(c, 56, true)
+    c.owl:SetPoint("LEFT", c, "LEFT", 6, 0)
+    c.title = Text(c, "GameFontNormal")
+    c.title:SetPoint("TOPLEFT", c, "TOPLEFT", 70, -9)
+    c.line = Text(c, "GameFontHighlightSmall", 0.8, 0.8, 0.8)
+    c.line:SetPoint("TOPLEFT", c.title, "BOTTOMLEFT", 0, -4)
+    c.line:SetWidth(340)
+    c:SetScript("OnEnter", function(self) self.panel.Color(0.12, 0.22, 0.44, 0.9) end)
+    c:SetScript("OnLeave", function(self) self.panel.Color(0.06, 0.1, 0.22, 0.75) end)
+    c:SetScript("OnClick", function(self) if self.who then postTo = self.who roost.Go(3) end end)
+    page.cards[i] = c
+  end
+  page.Fill = function()
+    local okLook, look = pcall(cos.Worn)
+    page.mine.Wear(okLook and look or {})
+    page.name:SetText(Name())
+    local bond = Owl.BondLevel and Owl.BondLevel() or 1
+    for i = 1, 7 do page.hearts[i]:SetTexture(MEDIA .. (i <= bond and "heart_full.tga" or "heart_empty.tga")) end
+    local lines = { Me() .. "'s owl. Bond level " .. bond .. " of 7." }
+    lines[#lines + 1] = (type(OwlHUDDB.catch) == "string" and OwlHUDDB.catch ~= "") and ("\"" .. OwlHUDDB.catch .. "\"") or "No catchphrase yet. /owl catchphrase"
+    lines[#lines + 1] = "Flock feathers: " .. (Num(OwlHUDDB.feathers) or 0)
+    page.about:SetText(table.concat(lines, "\n"))
+    local names = {}
+    for who, data in pairs(friends) do if not data.leaving then names[#names + 1] = who end end
+    table.sort(names)
+    if #names == 0 then page.none:Show() else page.none:Hide() end
+    for i = 1, 4 do
+      local c, who = page.cards[i], names[i]
+      if who then
+        local data = friends[who]
+        c.who = who
+        c.owl.Wear(data.look)
+        c.title:SetText(tostring(data.owl) .. "  |cffa0a0a0" .. who .. "|r")
+        local state = data.dead and "|cffff5050down|r" or data.low and "|cffff9040hurt badly|r" or data.far and "online, elsewhere" or "|cff80ff80in your group|r"
+        c.line:SetText("He calls them " .. Owl.Nick(who) .. ". " .. state:sub(1, 1):upper() .. state:sub(2) .. "." .. (data.catch and ("\n\"" .. data.catch .. "\"") or "\nClick to send a letter."))
+        c:Show()
+      else c.who = nil c:Hide() end
+    end
+  end
+  page.Live = function(e)
+    page.mine.Live(e)
+    for i = 1, 4 do if page.cards[i]:IsShown() then page.cards[i].owl.Live(e) end end
+  end
+end
+
+-- ---------- page 2: the flock ----------
+local COLS = { { "Gold earned", "gold", true }, { "Kills", "kills" }, { "Dungeon runs", "runs" }, { "Levels gained", "levels" }, { "Deaths", "deaths" }, { "Level", "level" } }
+local function BuildFlock(page)
+  page.head = Text(page, "GameFontNormal", BLUE[1], BLUE[2], BLUE[3])
+  page.head:SetPoint("TOPLEFT", page, "TOPLEFT", 30, -14)
+  page.head:SetText("This week's challenge")
+  page.goal = Text(page, "GameFontHighlight")
+  page.goal:SetPoint("TOPLEFT", page.head, "BOTTOMLEFT", 0, -6)
+  page.barBack = page:CreateTexture(nil, "BACKGROUND")
+  page.barBack:SetColorTexture(1, 1, 1, 0.1)
+  page.barBack:SetPoint("TOPLEFT", page.goal, "BOTTOMLEFT", 0, -8)
+  page.barBack:SetSize(W - 60, 10)
+  page.bar = page:CreateTexture(nil, "ARTWORK")
+  page.bar:SetColorTexture(1, 0.82, 0.29, 0.95)
+  page.bar:SetPoint("TOPLEFT", page.barBack, "TOPLEFT", 0, 0)
+  page.bar:SetSize(1, 10)
+  page.cols = {}
+  for i = 1, #COLS do
+    local fs = Text(page, "GameFontHighlight")
+    fs:SetPoint("TOPLEFT", page, "TOPLEFT", 30 + ((i - 1) % 3) * 236, -96 - math.floor((i - 1) / 3) * 112)
+    page.cols[i] = fs
+  end
+  page.foot = Text(page, "GameFontDisableSmall")
+  page.foot:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 30, 6)
+  page.foot:SetWidth(W - 60)
+  page.Fill = function()
+    local api = Owl.flockApi
+    if not api then return end
+    local members = api.Members()
+    local c, total = api.Progress()
+    local done = total >= c.goal
+    page.goal:SetText(stage.Key(c.text) .. "   " .. (done and "|cff60ff60Done!|r" or (c.money and (api.Gold(total) .. " of " .. api.Gold(c.goal)) or (total .. " of " .. c.goal))))
+    page.bar:SetWidth(math.max(1, (W - 60) * math.min(1, total / c.goal)))
+    for i, col in ipairs(COLS) do
+      table.sort(members, function(a, b) if a[col[2]] ~= b[col[2]] then return a[col[2]] > b[col[2]] end return a.name < b.name end)
+      local lines = { "|cff8cccff" .. col[1] .. "|r" }
+      for rank = 1, math.min(#members, 5) do
+        local m = members[rank]
+        local value = col[3] and api.Gold(m[col[2]]) or tostring(m[col[2]])
+        lines[#lines + 1] = (rank == 1 and m[col[2]] > 0 and "|cffffd24a" or "|cffc8c8c8") .. rank .. ". " .. (m.me and ("|cffffffff" .. m.name .. "|r") or m.name) .. "  " .. value .. "|r"
+      end
+      page.cols[i]:SetText(table.concat(lines, "\n"))
+    end
+    page.foot:SetText(#members < 2 and "Nobody else has reported in yet. Friends show up here once their owl has met yours."
+      or "This week only, apart from Level. It starts again every Tuesday.")
+  end
+end
+
+-- ---------- page 3: owl post ----------
+local function BuildPost(page)
+  page.head = Text(page, "GameFontNormal", BLUE[1], BLUE[2], BLUE[3])
+  page.head:SetPoint("TOPLEFT", page, "TOPLEFT", 30, -14)
+  page.head:SetText("Letters")
+  page.list = Text(page, "GameFontHighlight")
+  page.list:SetPoint("TOPLEFT", page.head, "BOTTOMLEFT", 0, -8)
+  page.list:SetWidth(W - 60)
+  page.toHead = Text(page, "GameFontNormal", BLUE[1], BLUE[2], BLUE[3])
+  page.toHead:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 30, 66)
+  page.toHead:SetText("Write to")
+  page.names = {}
+  for i = 1, 5 do
+    local b = Button(page, "", 100, function(self) postTo = self.who page.Fill() if page.edit and page.edit.SetFocus then page.edit:SetFocus() end end)
+    b:SetPoint("LEFT", page.toHead, "RIGHT", 12 + (i - 1) * 106, 0)
+    page.names[i] = b
+  end
+  local ok, edit = pcall(CreateFrame, "EditBox", nil, page)
+  if ok and edit and edit.SetAutoFocus then
+    edit:SetSize(590, 24)
+    edit:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 36, 32)
+    edit:SetAutoFocus(false)
+    if edit.SetFontObject then edit:SetFontObject("GameFontHighlight") end
+    if edit.SetMaxLetters then edit:SetMaxLetters(70) end
+    edit.back = CreateFrame("Frame", nil, page)
+    edit.back:SetPoint("TOPLEFT", edit, "TOPLEFT", -8, 2)
+    edit.back:SetPoint("BOTTOMRIGHT", edit, "BOTTOMRIGHT", 8, -2)
+    edit.back.panel = stage.Panel(edit.back, "BACKGROUND")
+    edit.back.panel.Color(0, 0, 0, 0.45)
+    local function Send()
+      local text = edit:GetText()
+      if type(text) ~= "string" or text:gsub("%s", "") == "" then return end
+      if not postTo then O.Print("pick who the letter is for first.") return end
+      O.commands.post(nil, postTo .. " " .. text)
+      edit:SetText("")
+      if edit.ClearFocus then edit:ClearFocus() end
+      page.Fill()
+    end
+    edit:SetScript("OnEnterPressed", function() O.Try("roost post", Send) end)
+    edit:SetScript("OnEscapePressed", function(self) if self.ClearFocus then self:ClearFocus() end end)
+    page.edit = edit
+    page.send = Button(page, "Send", 70, Send)
+    page.send:SetPoint("LEFT", edit, "RIGHT", 16, 0)
+  end
+  page.hint = Text(page, "GameFontDisableSmall")
+  page.hint:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 30, 6)
+  page.Fill = function()
+    local social = Owl.Record().social
+    social = type(social) == "table" and social or {}
+    local inbox = type(social.inbox) == "table" and social.inbox or {}
+    local lines = {}
+    for i = #inbox, math.max(1, #inbox - 6), -1 do
+      local l = inbox[i]
+      lines[#lines + 1] = stage.Key(tostring(l.from)) .. "  " .. tostring(l.text) .. "  |cff808080" .. Ago(l.at) .. "|r"
+    end
+    if #lines == 0 then lines[1] = "|cff909090No letters yet. When a friend's owl brings one, it is kept here.|r" end
+    page.list:SetText(table.concat(lines, "\n"))
+    -- who you can write to: owls beside him first, then anyone in the flock
+    local seen, names = {}, {}
+    for who in pairs(friends) do seen[who] = true names[#names + 1] = who end
+    for who in pairs(type(OwlHUDDB.flock) == "table" and OwlHUDDB.flock or {}) do if not seen[who] then seen[who] = true names[#names + 1] = who end end
+    table.sort(names)
+    if postTo and not seen[postTo] then names[#names + 1] = postTo end
+    for i = 1, 5 do
+      local b, who = page.names[i], names[i]
+      if who then b.who = who b.label:SetText(who) b.Mark(who == postTo) b:Show() else b:Hide() end
+    end
+    local waiting = 0
+    for _, box in pairs(type(social.outbox) == "table" and social.outbox or {}) do waiting = waiting + (type(box) == "table" and #box or 0) end
+    page.hint:SetText((#names == 0 and "Nobody to write to yet. Friends appear here once their owl has met yours. " or "If they are offline, your owl keeps the letter and delivers it later. ")
+      .. (waiting > 0 and ("He is carrying " .. waiting .. " undelivered.") or ""))
+  end
+end
+
+-- ---------- page 4: trophies ----------
+local function BuildTrophies(page)
+  page.head = Text(page, "GameFontNormal", BLUE[1], BLUE[2], BLUE[3])
+  page.head:SetPoint("TOPLEFT", page, "TOPLEFT", 30, -14)
+  page.head:SetText("Dungeon awards")
+  page.awards = Text(page, "GameFontHighlightSmall")
+  page.awards:SetPoint("TOPLEFT", page.head, "BOTTOMLEFT", 0, -8)
+  page.awards:SetWidth(W - 60)
+  page.head2 = Text(page, "GameFontNormal", BLUE[1], BLUE[2], BLUE[3])
+  page.head2:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 30, 92)
+  page.head2:SetText("This session")
+  page.recap = Text(page, "GameFontHighlightSmall")
+  page.recap:SetPoint("TOPLEFT", page.head2, "BOTTOMLEFT", 0, -8)
+  page.recap:SetWidth(W - 60)
+  page.Fill = function()
+    local log = type(OwlHUDDB.awardLog) == "table" and OwlHUDDB.awardLog or {}
+    local lines = {}
+    for i = #log, math.max(1, #log - 4), -1 do
+      local a = log[i]
+      lines[#lines + 1] = stage.Key(tostring(a.dungeon)) .. "  |cff808080" .. Ago(a.at) .. "|r\n   " .. tostring(a.line)
+    end
+    if #lines == 0 then lines[1] = "|cff909090None yet. Finish a dungeon with friends who have owls and the awards are kept here.|r" end
+    page.awards:SetText(table.concat(lines, "\n"))
+    local recap = Owl.Recap and Owl.Recap()
+    page.recap:SetText(type(recap) == "table" and table.concat(recap, "\n") or "Nothing to tell yet.")
+  end
+end
+
+-- ---------- page 5: ask him (everything you used to type) ----------
+local GROUPS = {
+  { "Your owl", { "wardrobe", "goals", "quirks", "bond", "pat", "dance", "five", "collection", "lanterns", "torches", "ask", "reading" } },
+  { "Friends", { "pals", "party", "readyall", "hootoff", "gift", "where", "notes", "rival", "lfg", "awards" } },
+  { "You", { "me", "journal", "stats", "recap", "records", "yearbook", "family", "gold", "worth", "rep", "mana" } },
+  { "Quests and travel", { "quests", "route", "needs", "plan", "hunt", "flights", "pull", "tip" } },
+  { "Show off", { "show dance", "show bow", "show spin", "show cheer", "show wave", "enter", "rain" } },
+  { "Tools", { "unlock", "owl", "report" } },
+}
+local EXTRA_LABEL = { reading = "His reading of you", awards = "Dungeon awards now", recap = "Session recap", ["show dance"] = "Dance, for all to see", ["show bow"] = "Bow",
+  ["show spin"] = "Spin", ["show cheer"] = "Cheer", ["show wave"] = "Wave", enter = "Replay entrances", rain = "Umbrellas (pretend rain)" }
+local STAYS = { pat = true, report = true, dance = true, five = true, enter = true, rain = true, reading = true, show = true }
+local function Rows(page, count, width, x0, y0, cols)
+  local list = {}
+  for i = 1, count do
+    local b = CreateFrame("Button", nil, page)
+    b:SetSize(width, 22)
+    b:SetPoint("TOPLEFT", page, "TOPLEFT", x0 + ((i - 1) % cols) * (width + 6), y0 - math.floor((i - 1) / cols) * 25)
+    b.panel = stage.Panel(b, "BACKGROUND")
+    b.panel.Color(0.06, 0.1, 0.22, 0.8)
+    b.label = Text(b, "GameFontHighlightSmall")
+    b.label:SetPoint("LEFT", b, "LEFT", 9, 0)
+    b.value = Text(b, "GameFontNormalSmall")
+    b.value:SetPoint("RIGHT", b, "RIGHT", -9, 0)
+    b:SetScript("OnEnter", function(self) self.panel.Color(0.16, 0.3, 0.55, 0.95) end)
+    b:SetScript("OnLeave", function(self) self.panel.Color(0.06, 0.1, 0.22, 0.8) end)
+    b:Hide()
+    list[i] = b
+  end
+  return list
+end
+local function Chips(page, names, onPick)
+  local chips = {}
+  for i, name in ipairs(names) do
+    local b = Button(page, name, 150, function() onPick(i) end)
+    b:SetPoint("TOPLEFT", page, "TOPLEFT", 24, -14 - (i - 1) * 27)
+    chips[i] = b
+  end
+  return chips
+end
+-- run one of his commands and catch what it would have written to chat, so the answer can be shown right here
+local function Capture(fn, arg)
+  local got = {}
+  local realPrint, realOPrint = _G.print, O.Print
+  local function keep(...)
+    local parts = {}
+    for i = 1, select("#", ...) do parts[i] = tostring((select(i, ...))) end
+    got[#got + 1] = table.concat(parts, " ")
+  end
+  _G.print = function(...) keep(...) return realPrint(...) end
+  O.Print = function(msg) keep(msg) return realOPrint(msg) end
+  local ok, err = pcall(fn, arg, arg)
+  _G.print, O.Print = realPrint, realOPrint
+  if not ok then O.Print("|cffff4040problem:|r " .. tostring(err)) end
+  return got
+end
+local function BuildAsk(page)
+  local labels = {}
+  for _, act in ipairs(Owl.ACTIONS or {}) do labels[act[2]] = act[1] end
+  for key, label in pairs(EXTRA_LABEL) do labels[key] = label end
+  page.group = 1
+  page.rows = Rows(page, 12, 150, 186, -14, 1)
+  page.back = CreateFrame("Frame", nil, page)
+  page.back:SetPoint("TOPLEFT", page, "TOPLEFT", 346, -10)
+  page.back:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -22, 4)
+  page.back.panel = stage.Panel(page.back, "BACKGROUND")
+  page.back.panel.Color(0, 0, 0, 0.35)
+  page.answer = Text(page.back, "GameFontHighlightSmall")
+  page.answer:SetPoint("TOPLEFT", page.back, "TOPLEFT", 10, -8)
+  page.answer:SetWidth(W - 356 - 34)
+  local names = {}
+  for i, g in ipairs(GROUPS) do names[i] = g[1] end
+  page.chips = Chips(page, names, function(i) page.group = i page.Fill() end)
+  local function Run(key)
+    local cmd, arg = key:match("^(%S+)%s*(.*)$")
+    local fn = O.commands[cmd]
+    if cmd == "unlock" and O.unlocked then fn = O.commands.lock end
+    if type(fn) ~= "function" then return end
+    if cmd == "wardrobe" or cmd == "unlock" or cmd == "ask" or cmd == "journal" or cmd == "collection" then roost:Hide() end
+    local got = Capture(fn, arg)
+    local lines = {}
+    for i = 1, math.min(#got, 19) do lines[i] = (got[i]:gsub("^|cffffd100OwlHUD|r ", "")) end
+    if #got > 19 then lines[#lines + 1] = "|cff8cccff... the rest is in your chat window.|r" end
+    if #lines == 0 then lines[1] = STAYS[cmd] and "|cff8cccffDone. Watch him.|r" or "|cff8cccffHe is on it. Watch him, or your chat window.|r" end
+    page.answer:SetText(table.concat(lines, "\n"))
+    page.shownLen = 0
+    if page.answer.SetAlphaGradient then pcall(page.answer.SetAlphaGradient, page.answer, 0, 12) end
+  end
+  page.Fill = function()
+    for i, chip in ipairs(page.chips) do chip.Mark(i == page.group) end
+    local keys = GROUPS[page.group][2]
+    local n = 0
+    for _, key in ipairs(keys) do
+      if O.commands[key:match("^(%S+)")] and page.rows[n + 1] then
+        n = n + 1
+        local row = page.rows[n]
+        row.label:SetText(labels[key] or key)
+        row:SetScript("OnClick", function() O.Try("roost ask " .. key, Run, key) end)
+        row:Show()
+      end
+    end
+    for i = n + 1, #page.rows do page.rows[i]:Hide() end
+    if not page.asked then page.asked = true page.answer:SetText("|cff8cccffPick something on the left.|r\nHis answer is written here, so you do not have to hunt for it in chat.") end
+  end
+  page.Live = function(e)
+    if page.shownLen and page.answer.SetAlphaGradient then
+      page.shownLen = page.shownLen + e * 500
+      pcall(page.answer.SetAlphaGradient, page.answer, math.floor(page.shownLen), 12)
+      if page.shownLen > 2500 then page.shownLen = nil end
+    end
+  end
+end
+
+-- ---------- page 6: settings ----------
+O.commands.entertoggle = function() O.commands.enter(OwlHUDDB.entrances == false and "on" or "off") end
+O.commands.awardstoggle = function() O.commands.awards(OwlHUDDB.awards == false and "on" or "off") end
+O.commands.bantertoggle = function()
+  OwlHUDDB.banter = OwlHUDDB.banter == false
+  O.Print("owls trading a line when you group" .. (OwlHUDDB.banter and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+end
+O.commands.cardstoggle = function()
+  OwlHUDDB.friendCards = OwlHUDDB.friendCards == false
+  O.Print("name plates on friends' owls" .. (OwlHUDDB.friendCards and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+end
+O.commands.scarftoggle = function()
+  OwlHUDDB.classScarf = OwlHUDDB.classScarf == false
+  O.Print("class-coloured scarves on friends' owls" .. (OwlHUDDB.classScarf and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+end
+local STAGE_OPTIONS = {
+  { "Entrances", "entertoggle", function() return OwlHUDDB.entrances ~= false end },
+  { "The box for big moments", "notices", function() return OwlHUDDB.notices ~= false end },
+  { "Awards after a dungeon", "awardstoggle", function() return OwlHUDDB.awards ~= false end },
+  { "Owls trade a line on grouping", "bantertoggle", function() return OwlHUDDB.banter ~= false end },
+  { "Friends in a row, not a column", "branch", function() return OwlHUDDB.friendRow == true end },
+  { "Class-coloured scarves", "scarftoggle", function() return OwlHUDDB.classScarf ~= false end },
+  { "Name plates on friends' owls", "cardstoggle", function() return OwlHUDDB.friendCards ~= false end },
+}
+local function BuildSettings(page)
+  page.sets = {}
+  local now
+  for _, opt in ipairs(Owl.OPTIONS or {}) do
+    if opt.head then now = { opt.head, {} } page.sets[#page.sets + 1] = now
+    elseif now then now[2][#now[2] + 1] = opt end
+  end
+  page.sets[#page.sets + 1] = { "Stage and friends", STAGE_OPTIONS }
+  local names = {}
+  for i, set in ipairs(page.sets) do names[i] = set[1] end
+  page.group = 1
+  page.chips = Chips(page, names, function(i) page.group = i page.Fill() end)
+  page.rows = Rows(page, 22, 270, 186, -14, 2)
+  page.hint = Text(page, "GameFontDisableSmall")
+  page.hint:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 186, 6)
+  page.hint:SetText("Click a line to change it. Right-click the owl himself to hush him for ten minutes.")
+  page.Fill = function()
+    for i, chip in ipairs(page.chips) do chip.Mark(i == page.group) end
+    local opts = page.sets[page.group][2]
+    for i, row in ipairs(page.rows) do
+      local opt = opts[i]
+      if opt then
+        row.label:SetText(opt[1])
+        local ok, v = pcall(opt[3])
+        if not ok then v = nil end
+        if type(v) == "boolean" or v == nil then row.value:SetText(v and "|cff60ff60On|r" or "|cff8090a0Off|r")
+        else v = tostring(v) row.value:SetText("|cffffd24a" .. v:sub(1, 1):upper() .. v:sub(2) .. "|r") end
+        row:SetScript("OnClick", function()
+          local fn = O.commands[opt[2]]
+          if type(fn) == "function" then
+            if opt.textStep then O.Try("owl option text", fn, tostring(math.max(10, math.min(26, (tonumber(OwlHUDDB.textSize) or 16) + opt.textStep))))
+            elseif opt.step then O.Try("owl option " .. opt[2], fn, tostring(math.max(50, math.min(300, (tonumber(OwlHUDDB.owlSize) or 160) + opt.step))))
+            else O.Try("owl option " .. opt[2], fn, "") end
+          end
+          page.Fill()
+        end)
+        row:Show()
+      else row:Hide() end
+    end
+  end
+end
+local BUILDERS = { BuildOwls, BuildFlock, BuildPost, BuildTrophies, BuildAsk, BuildSettings }
+
+-- ---------- the window ----------
+local function Build()
+  roost = CreateFrame("Frame", "OwlHUDRoost", UIParent)
+  roost:SetSize(W, H)
+  roost:SetPoint("CENTER", UIParent, "CENTER", 0, 30)
+  if roost.SetFrameStrata then roost:SetFrameStrata("DIALOG") end
+  if roost.EnableMouse then roost:EnableMouse(true) end
+  roost.panel = stage.Panel(roost, "BACKGROUND")
+  roost.panel.Color(0.0, 0.02, 0.09, 0.92)
+  roost.title = Text(roost, "GameFontNormalLarge", BLUE[1], BLUE[2], BLUE[3])
+  roost.title:SetPoint("TOPLEFT", roost, "TOPLEFT", 30, -16)
+  roost.title:SetText("The Roost")
+  roost.rule = roost:CreateTexture(nil, "ARTWORK")
+  roost.rule:SetColorTexture(BLUE[1], BLUE[2], BLUE[3], 0.35)
+  roost.rule:SetPoint("TOPLEFT", roost, "TOPLEFT", 24, -74)
+  roost.rule:SetSize(W - 48, 1)
+  -- the cursor: a soft light that slides under the page you are on
+  roost.cursor = CreateFrame("Frame", nil, roost)
+  roost.cursor:SetSize(96, 24)
+  roost.cursor.panel = stage.Panel(roost.cursor, "BACKGROUND")
+  roost.cursor.panel.Color(0.25, 0.5, 0.9, 0.55)
+  roost.cursorX, roost.cursorTo = 0, 0
+  for i, name in ipairs(PAGE_NAMES) do
+    local t = CreateFrame("Button", nil, roost)
+    t:SetSize(96, 24)
+    t:SetPoint("TOPLEFT", roost, "TOPLEFT", 28 + (i - 1) * 104, -44)
+    t.label = Text(t, "GameFontNormal", 1, 1, 1)
+    t.label:SetPoint("CENTER", t, "CENTER", 0, 0)
+    t.label:SetText(name)
+    t:SetScript("OnClick", function() roost.Go(i) end)
+    t:SetScript("OnEnter", function(self) self.label:SetTextColor(1, 0.85, 0.4) end)
+    t:SetScript("OnLeave", function(self) local on = (i == current) self.label:SetTextColor(on and 1 or 0.6, on and 1 or 0.7, on and 1 or 0.85) end)
+    tabs[i] = t
+    local page = CreateFrame("Frame", nil, roost)
+    page:SetPoint("TOPLEFT", roost, "TOPLEFT", 0, -80)
+    page:SetSize(W, H - 124)
+    page:Hide()
+    pages[i] = page
+  end
+  roost.hint = Text(roost, "GameFontDisableSmall")
+  roost.hint:SetPoint("BOTTOMLEFT", roost, "BOTTOMLEFT", 30, 16)
+  roost.hint:SetText("Scroll to turn the page.  Esc closes.")
+  roost.close = Button(roost, "Close", 70, function() roost:Hide() end)
+  roost.close:SetPoint("BOTTOMRIGHT", roost, "BOTTOMRIGHT", -24, 12)
+  roost.outfits = Button(roost, "Wardrobe", 80, function() roost:Hide() if O.commands.wardrobe then O.commands.wardrobe("") end end)
+  roost.outfits:SetPoint("RIGHT", roost.close, "LEFT", -8, 0)
+  roost.Go = function(i)
+    if i < 1 then i = #pages elseif i > #pages then i = 1 end
+    if not pages[i].built then pages[i].built = true BUILDERS[i](pages[i]) end
+    flipDir = (i >= current) and 1 or -1
+    for k, page in ipairs(pages) do if k == i then page:Show() else page:Hide() end end
+    current, flipT = i, 0
+    roost.cursorTo = (i - 1) * 104
+    for k, t in ipairs(tabs) do t.label:SetTextColor(k == i and 1 or 0.6, k == i and 1 or 0.7, k == i and 1 or 0.85) end
+    pages[i].Fill()
+    roost.fillAt = 0
+  end
+  if roost.EnableMouseWheel then
+    roost:EnableMouseWheel(true)
+    roost:SetScript("OnMouseWheel", function(_, delta) roost.Go(current + ((Num(delta) or 0) > 0 and -1 or 1)) end)
+  end
+  roost.t = 0
+  roost:SetScript("OnUpdate", function(_, e)
+    O.Try("owl roost", function()
+      roost.t = roost.t + e
+      -- the window opens with a small pop, the cursor glides and glows, the page slides in
+      if roost.openT then
+        roost.openT = roost.openT + e
+        local p = math.min(roost.openT / 0.16, 1)
+        if roost.SetScale then roost:SetScale(0.85 + 0.15 * p * (2 - p)) end
+        if roost.SetAlpha then roost:SetAlpha(p) end
+        if p >= 1 then roost.openT = nil end
+      end
+      roost.cursorX = roost.cursorX + (roost.cursorTo - roost.cursorX) * math.min(1, e * 14)
+      roost.cursor:ClearAllPoints()
+      roost.cursor:SetPoint("TOPLEFT", roost, "TOPLEFT", 28 + roost.cursorX, -44)
+      if roost.cursor.SetAlpha then roost.cursor:SetAlpha(0.7 + 0.3 * math.sin(roost.t * 4)) end
+      local page = pages[current]
+      if flipT then
+        flipT = flipT + e
+        local p = math.min(flipT / 0.2, 1)
+        local ease = p * (2 - p)
+        page:ClearAllPoints()
+        page:SetPoint("TOPLEFT", roost, "TOPLEFT", (1 - ease) * 40 * flipDir, -80)
+        if page.SetAlpha then page:SetAlpha(ease) end
+        if p >= 1 then flipT = nil end
+      end
+      if page.Live then page.Live(e) end
+      roost.fillAt = (roost.fillAt or 0) + e
+      local typing = pages[3].edit and pages[3].edit.HasFocus and pages[3].edit:HasFocus()
+      if roost.fillAt >= 1.5 and not typing then roost.fillAt = 0 page.Fill() end
+    end)
+  end)
+  if type(_G.UISpecialFrames) == "table" then table.insert(_G.UISpecialFrames, "OwlHUDRoost") end
+  roost:Hide()
+end
+local function Toggle(pageNumber)
+  if not roost then Build() end
+  if roost:IsShown() and not pageNumber then roost:Hide() return end
+  roost.openT = 0
+  roost:Show()
+  roost.Go(pageNumber or current)
+end
+O.commands.roost = function(arg)
+  local want = ({ owls = 1, flock = 2, board = 2, post = 3, letters = 3, trophies = 4, awards = 4, ask = 5, settings = 6, options = 6 })[arg or ""]
+  Toggle(want)
+end
+O.commands.board = function() Toggle(2) end
+O.commands.flock = O.commands.board
+-- a click on him opens the Roost; his settings are a page of it now
+Owl.oldOptions = O.OwlOptions
+O.OwlOptions = function() Toggle() end
+O.commands.options = function() Toggle(6) end
+O.commands.menu = function() Toggle() end
+O.commands.settings = O.commands.options
+end
+
+-- how far the big talking owl reaches past the place he normally sits, so his friends can step out from under him
+do
+local room, roomAt, roomSide = 0, 0, nil
+Owl.stage.Room = function(side)
+  local now = Now()
+  if now ~= roomAt or side ~= roomSide then
+    local want = 0
+    local perch, icon = _G.OwlHUDPerch, pal and pal.icon
+    if perch and icon and pal:IsShown() and icon:IsShown() then
+      local ps, is = Num(perch:GetEffectiveScale()) or 1, Num(pal:GetEffectiveScale()) or 1
+      local a, b
+      if side == "down" then a, b = Num(perch:GetBottom()), Num(icon:GetBottom()) if a and b then want = a * ps - b * is end
+      elseif side == "up" then a, b = Num(perch:GetTop()), Num(icon:GetTop()) if a and b then want = b * is - a * ps end
+      else a, b = Num(perch:GetLeft()), Num(icon:GetLeft()) if a and b then want = a * ps - b * is end end
+      want = (want > 0 and ps > 0) and (want / ps + 6) or 0
+    end
+    local dt = math.min(math.max(now - roomAt, 0), 0.1)
+    if side ~= roomSide then room = want else room = room + (want - room) * math.min(1, dt * 10) end
+    if math.abs(want - room) < 0.5 then room = want end
+    roomAt, roomSide = now, side
+  end
+  return room
+end
 end

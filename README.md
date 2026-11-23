@@ -2,7 +2,7 @@
 
 A talking owl companion for **World of Warcraft: Forever**. He sits on your screen, watches what you do, remembers it, and helps. He has a wardrobe, goals of his own, and he knows your friends' owls.
 
-**Current version: 3.7**
+**Current version: 3.8**
 
 ## Get it
 
@@ -32,7 +32,16 @@ Whenever there is a new version:
 
 That is all. It fetches the newest version from this page and puts it in the right place.
 
-## What is new in 3.7
+## What is new in 3.8
+
+- **Replies that fit the whisper.** Guild invites get Sure! and No thanks!, and whispers about groups, trades, summons and more get answers that match.
+- **The Roost.** Click your owl for one window with everything: the owls in their outfits, the Flock board, owl post and your trophies. Scroll to turn the page. Settings and everything you used to type are pages in it too.
+- **The Flock board.** `/owl board` ranks you and your friends this week: gold earned, kills, dungeon runs, levels gained, deaths.
+- **A weekly challenge you share.** The same goal for everyone, counted across the whole group. Finish it and everybody gets a flock feather.
+- **Owl post.** `/owl post Paul See you at eight` flies a letter to a friend. If they are offline your owl holds it and delivers it later.
+- **Tricks.** `/owl show dance` (or bow, spin, cheer, wave) and your friends see your owl do it.
+
+## Earlier, in 3.7
 
 - **A box for the big moments.** Dungeon awards, level-ups and your session recap open in a dark box in the middle of the screen, with the words writing themselves out. Click it to close. `/owl notices` turns it off.
 - **Hover card and windows** now match the new bubble style.
@@ -40,7 +49,7 @@ That is all. It fetches the newest version from this page and puts it in the rig
 ## Earlier, in 3.6
 
 - **Entrances.** Owls swoop, drop, pop, roll or peek their way onto the branch, and fly off when their player leaves. `/owl enter` replays it.
-- **One branch.** Your friends' owls sit along one branch beside yours. `/owl branch` puts them back in a column.
+- **One column.** Your friends' owls stand in a column with yours, every owl the same size. `/owl branch` lines them up along one branch instead.
 - **Their own speech bubbles.** A friend's owl talks from its own bubble, and the others turn to look.
 - **A new bubble style.** A soft dark box with white letters that write themselves out. `/owl bubble` switches styles.
 - **Bigger wings, and they hold things.** In the rain every owl holds an umbrella in its wing. `/owl rain` shows it off.
@@ -71,6 +80,9 @@ That is all. It fetches the newest version from this page and puts it in the rig
 | Type this | What it does |
 | --- | --- |
 | `/owl` | Everything he can do |
+| `/owl board` | The Flock leaderboard and weekly challenge |
+| `/owl post` | Send a letter by owl, or read yours |
+| `/owl show dance` | A trick your friends can see |
 | `/owl enter` | Replay the entrances |
 | `/owl catchphrase` | What your owl says when it lands |
 | `/owl nick` | What he calls your friends |
