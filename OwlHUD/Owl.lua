@@ -180,6 +180,8 @@ O.On("PLAYER_DEAD", function()
         if enemy(unit) and Q("UnitIsUnit", unit .. "target", "player") then name = Plain(UnitName(unit)) break end
       end
     end
+    -- nobody is looking at you this instant: the last enemy player he saw with you as their target, moments ago
+    if not name and type(Owl.threat) == "table" and Now() - Owl.threat.at < 20 then name = Owl.threat.name end
     if type(name) == "string" and name ~= "" then killer = { name = name, player = true, pet = false, at = Now(), sure = false } end
   end
   Owl.killer = killer
@@ -1091,6 +1093,7 @@ local function Spot(unit)
   end
   Say("enemy" .. name, line, 0, "uc")
 end
+Owl.Spot = Spot
 O.On("NAME_PLATE_UNIT_ADDED", Spot)
 O.On("PLAYER_TARGET_CHANGED", function() Spot("target") end)
 O.On("UPDATE_MOUSEOVER_UNIT", function() Spot("mouseover") end)
@@ -13253,13 +13256,13 @@ end
 -- ---------- page 5: ask him (everything you used to type) ----------
 local GROUPS = {
   { "Your owl", { "wardrobe", "goals", "quirks", "bond", "pat", "dance", "five", "collection", "lanterns", "torches", "ask", "reading" } },
-  { "Friends", { "pals", "party", "readyall", "hootoff", "gift", "where", "notes", "rival", "lfg", "awards" } },
+  { "Friends", { "pals", "party", "readyall", "hootoff", "gift", "where", "notes", "rival", "foes", "lfg", "awards" } },
   { "You", { "me", "journal", "stats", "recap", "records", "yearbook", "family", "gold", "worth", "rep", "mana" } },
   { "Quests and travel", { "quests", "route", "needs", "plan", "hunt", "flights", "pull", "tip" } },
   { "Show off", { "show dance", "show bow", "show spin", "show cheer", "show wave", "enter", "rain" } },
   { "Tools", { "unlock", "owl", "report" } },
 }
-local EXTRA_LABEL = { reading = "His reading of you", awards = "Dungeon awards now", recap = "Session recap", ["show dance"] = "Dance, for all to see", ["show bow"] = "Bow",
+local EXTRA_LABEL = { foes = "Enemy players seen", reading = "His reading of you", awards = "Dungeon awards now", recap = "Session recap", ["show dance"] = "Dance, for all to see", ["show bow"] = "Bow",
   ["show spin"] = "Spin", ["show cheer"] = "Cheer", ["show wave"] = "Wave", enter = "Replay entrances", rain = "Umbrellas (pretend rain)" }
 local STAYS = { pat = true, report = true, dance = true, five = true, enter = true, rain = true, reading = true, show = true }
 local function Rows(page, count, width, x0, y0, cols)
@@ -13569,5 +13572,170 @@ Owl.stage.Room = function(side)
     roomAt, roomSide = now, side
   end
   return room
+end
+end
+
+-- =====================================================================================
+-- The watch: every way this game lets him notice an enemy player. Nameplates, your target, focus and pointer,
+-- whoever your group is targeting, anyone who has YOU as their target, and what your friends' owls have seen.
+-- =====================================================================================
+do
+local friends = Owl.cos.friends
+local seen, order = {}, {}            -- by name: { at, level, class, zone, by }
+local told, toldAt, burst = {}, -100, {}
+local stats = { scans = 0, mine = 0, heard = 0, sent = 0, threats = 0, targetRead = "untested", focus = "untested", partyTargets = 0 }
+local function Clean(text, limit) return (tostring(text or ""):gsub("[|;%c]", ""):sub(1, limit)) end
+local function On()
+  if not (OwlHUDDB.sense and OwlHUDDB.tips) then return false end
+  local inside, kind = Q("IsInInstance")
+  return not (inside and (kind == "pvp" or kind == "arena"))
+end
+local function Enemy(unit)
+  if not Q("UnitExists", unit) or not Q("UnitIsPlayer", unit) then return nil end
+  local mine, theirs = Q("UnitFactionGroup", "player"), Q("UnitFactionGroup", unit)
+  if type(mine) ~= "string" or type(theirs) ~= "string" or mine == theirs then return nil end
+  local name = Plain(UnitName(unit))
+  return type(name) == "string" and name ~= "" and name or nil
+end
+local function Note(name, level, class, zone, by)
+  local e = seen[name]
+  if not e then
+    e = {}
+    seen[name] = e
+    order[#order + 1] = name
+    while #order > 30 do seen[table.remove(order, 1)] = nil end
+  end
+  local fresh = not e.at or Now() - e.at > 300
+  e.at, e.level, e.class, e.zone, e.by = Now(), level or e.level, class or e.class, zone or e.zone, by
+  return fresh
+end
+local function What(level, class)
+  local out = (type(level) == "number" and level > 0) and ("level " .. level) or "level ??"
+  if type(class) == "string" and class ~= "" then out = out .. " " .. class end
+  return out
+end
+-- tell the flock: your group, and friends' owls further off. Never a flood: one sighting at a time, and none at all
+-- when enemies are pouring past (a raid on a town is not news each of them needs by name).
+local function Share(name, level, class)
+  if OwlHUDDB.social == false or OwlHUDDB.shareFoes == false then return end
+  local now = Now()
+  for i = #burst, 1, -1 do if now - burst[i] > 60 then table.remove(burst, i) end end
+  burst[#burst + 1] = now
+  if #burst > 5 or now - toldAt < 20 or (told[name] and now - told[name] < 300) then return end
+  told[name], toldAt = now, now
+  local line = Clean(name, 24) .. ";" .. ((type(level) == "number" and level > 0) and level or 0) .. ";" .. Clean(class, 16) .. ";" .. Clean(Zone(), 40)
+  if Owl.net then pcall(Owl.net.Send, "FOE", line) end
+  if C_ChatInfo and C_ChatInfo.SendAddonMessage then
+    for who, data in pairs(friends) do
+      if data.far and not data.leaving then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "FOE|" .. Name() .. "|" .. line, "WHISPER", Owl.Addr(who)) end
+    end
+  end
+  stats.sent = stats.sent + 1
+end
+local threatAt = {}
+local function Look(unit, viaGroup)
+  local name = Enemy(unit)
+  if not name then return end
+  local level, class = Plain(UnitLevel(unit)), Plain((UnitClass(unit)))
+  local fresh = Note(name, type(level) == "number" and level or nil, type(class) == "string" and class or nil, Zone(), nil)
+  if fresh then stats.mine = stats.mine + 1 Share(name, level, class) end
+  if Owl.Spot then pcall(Owl.Spot, unit) end
+  -- is this one looking at you?
+  local onYou = Q("UnitIsUnit", unit .. "target", "player")
+  if onYou ~= nil then stats.targetRead = "yes" elseif stats.targetRead == "untested" then stats.targetRead = "no answer" end
+  if onYou == true then
+    Owl.threat = { name = name, at = Now() }
+    local now = Now()
+    if (not threatAt[name] or now - threatAt[name] > 90) and now - (stats.lastThreat or -100) > 15 and Plain(UnitAffectingCombat("player")) ~= true then
+      threatAt[name], stats.lastThreat = now, now
+      stats.threats = stats.threats + 1
+      Say("threat" .. name, { name .. " has you targeted. " .. What(level, class):sub(1, 1):upper() .. What(level, class):sub(2) .. ".", "Eyes up. " .. name .. " is looking right at you." }, 0, "uc")
+      if Owl.cos.Idle then pcall(Owl.cos.Idle, "startle", 0.8) end
+    end
+  end
+end
+local acc = 0
+local scanner = CreateFrame("Frame")
+scanner:SetScript("OnUpdate", function(_, e)
+  acc = acc + e
+  if acc < 1 then return end
+  acc = 0
+  O.Try("owl watch", function()
+    if not On() then return end
+    stats.scans = stats.scans + 1
+    Look("target") Look("mouseover")
+    if Q("UnitExists", "focus") then stats.focus = "yes" Look("focus") end
+    for i = 1, 40 do
+      local unit = "nameplate" .. i
+      if Q("UnitExists", unit) then Look(unit) end
+    end
+    -- whoever your group has targeted
+    if Q("IsInGroup") and not Q("IsInRaid") then
+      for i = 1, 4 do
+        local unit = "party" .. i .. "target"
+        if Q("UnitExists", unit) then stats.partyTargets = stats.partyTargets + 1 Look(unit, true) end
+      end
+    end
+  end)
+end)
+
+-- what a friend's owl saw
+local heardAt = -100
+local netBefore = Owl.onNet
+Owl.onNet = function(kind, sender, owl, extra)
+  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if kind ~= "FOE" or type(extra) ~= "string" or not friends[sender] or OwlHUDDB.sense == false then return end
+  local name, level, class, zone = extra:match("^([^;]+);(%d+);([^;]*);(.+)$")
+  if not name then return end
+  name, class, zone, level = Clean(name, 24), Clean(class, 16), Clean(zone, 40), tonumber(level)
+  if level == 0 then level = nil end
+  stats.heard = stats.heard + 1
+  local mineToo = seen[name] and not seen[name].by and Now() - seen[name].at < 120
+  Note(name, level, class ~= "" and class or nil, zone, sender)
+  if mineToo or not On() then return end
+  if zone == Zone() and Now() - heardAt > 20 then
+    heardAt = Now()
+    Say("foeheard" .. name, tostring(owl) .. " just saw an enemy near you: " .. name .. ", " .. What(level, class) .. ". " .. sender .. " is in " .. zone .. " too.", 0, "uc")
+    if Owl.stage and Owl.stage.Speak then pcall(Owl.stage.Speak, sender, "Enemy!", 2) end
+  end
+end
+-- walking into a zone where a friend's owl saw someone a little while ago
+O.On("ZONE_CHANGED_NEW_AREA", function()
+  if not On() then return end
+  local zone, best = Zone(), nil
+  for name, e in pairs(seen) do
+    if e.by and e.zone == zone and Now() - e.at < 600 and (not best or e.at > seen[best].at) then best = name end
+  end
+  if best then
+    local e = seen[best]
+    local mins = math.floor((Now() - e.at) / 60)
+    Say("foezone" .. zone, "Careful here. " .. e.by .. "'s owl saw " .. best .. ", " .. What(e.level, e.class) .. ", " .. (mins < 1 and "a moment ago." or (mins .. " min ago.")), 600)
+  end
+end)
+
+O.commands.foes = function(arg)
+  if arg == "share" then
+    OwlHUDDB.shareFoes = OwlHUDDB.shareFoes == false
+    O.Print("telling friends' owls about enemy players he sees" .. (OwlHUDDB.shareFoes and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+    return
+  end
+  O.Print("|cffffd100Enemy players seen|r" .. (OwlHUDDB.sense and "" or "  |cffff8040(his lookout is off: /owl sense)|r"))
+  local names = {}
+  for name, e in pairs(seen) do if Now() - e.at < 1800 then names[#names + 1] = name end end
+  table.sort(names, function(a, b) return seen[a].at > seen[b].at end)
+  if #names == 0 then print("  None in the last half hour.") end
+  for i = 1, math.min(#names, 12) do
+    local e = seen[names[i]]
+    local mins = math.floor((Now() - e.at) / 60)
+    print("  " .. names[i] .. ", " .. What(e.level, e.class) .. ", " .. tostring(e.zone) .. ", " .. (mins < 1 and "just now" or (mins .. " min ago")) .. (e.by and (" (seen by " .. e.by .. "'s owl)") or ""))
+  end
+  print("  He can only see players the game shows you: within about 40 yards, or through a friend's owl.")
+end
+Owl.probe = Owl.probe or {}
+Owl.probe.watch = function()
+  local n = 0
+  for _ in pairs(seen) do n = n + 1 end
+  return "on=" .. tostring(On()) .. " scans=" .. stats.scans .. " seenByMe=" .. stats.mine .. " heardFromFriends=" .. stats.heard .. " shared=" .. stats.sent .. " inList=" .. n
+    .. " threats=" .. stats.threats .. " canReadTheirTarget=" .. stats.targetRead .. " focusUnit=" .. stats.focus .. " partyTargetsSeen=" .. stats.partyTargets
 end
 end

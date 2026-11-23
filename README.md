@@ -2,7 +2,7 @@
 
 A talking owl companion for **World of Warcraft: Forever**. He sits on your screen, watches what you do, remembers it, and helps. He has a wardrobe, goals of his own, and he knows your friends' owls.
 
-**Current version: 3.8**
+**Current version: 3.9**
 
 ## Get it
 
@@ -32,7 +32,17 @@ Whenever there is a new version:
 
 That is all. It fetches the newest version from this page and puts it in the right place.
 
-## What is new in 3.8
+## What is new in 3.9
+
+- **A sharper lookout for enemy players.** He now checks your focus and whoever your group is targeting as well as nameplates, your target and your pointer.
+- **"He has you targeted."** A warning the moment an enemy player picks you as their target.
+- **Owls share sightings.** When a friend's owl sees an enemy player, yours hears about it, and warns you if you are in that zone or walk into it soon after.
+- **Better memory of who killed you**, using the last enemy he saw targeting you.
+- `/owl foes` lists enemy players seen in the last half hour, by you or by a friend's owl.
+
+The game only lets an addon see players it is already showing you (about 40 yards), so there is no radar and no stealth detection.
+
+## Earlier, in 3.8
 
 - **Replies that fit the whisper.** Guild invites get Sure! and No thanks!, and whispers about groups, trades, summons and more get answers that match.
 - **The Roost.** Click your owl for one window with everything: the owls in their outfits, the Flock board, owl post and your trophies. Scroll to turn the page. Settings and everything you used to type are pages in it too.
@@ -80,6 +90,7 @@ That is all. It fetches the newest version from this page and puts it in the rig
 | Type this | What it does |
 | --- | --- |
 | `/owl` | Everything he can do |
+| `/owl foes` | Enemy players seen lately, by you or a friend's owl |
 | `/owl board` | The Flock leaderboard and weekly challenge |
 | `/owl post` | Send a letter by owl, or read yours |
 | `/owl show dance` | A trick your friends can see |
