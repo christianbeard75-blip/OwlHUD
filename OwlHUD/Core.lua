@@ -5,7 +5,7 @@ OwlHUDDB = OwlHUDDB or {}
 
 O.defaults = { sell = true, repair = true, fastloot = true, sound = true, warnBuffs = true }
 O.handlers = {}
-O.VERSION, O.VERSION_TEXT = 39, "3.9"
+O.VERSION, O.VERSION_TEXT = 41, "4.1"
 -- the helpers beyond the owl himself: what "the full setup" switches on
 O.HELPERS = { "sell", "repair", "fastloot", "classic", "sides", "questMark", "gatherMark", "ding" }
 O.commands = {}

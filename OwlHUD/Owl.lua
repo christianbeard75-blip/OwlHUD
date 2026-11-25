@@ -50,6 +50,52 @@ Owl.Addr = function(name)
   local t = OwlHUDDB.fullNames
   return (type(t) == "table" and type(t[name]) == "string" and t[name]) or name
 end
+-- Things that go wrong where nobody would see: each different one is written down once, for /owl report.
+Owl.oopsSeen = {}
+Owl.Oops = function(label, err)
+  local key = tostring(label) .. ": " .. tostring(err)
+  if Owl.oopsSeen[key] then return end
+  Owl.oopsSeen[key] = true
+  if type(OwlHUDDB) ~= "table" then return end
+  if type(OwlHUDDB.errlog) ~= "table" then OwlHUDDB.errlog = {} end
+  local log = OwlHUDDB.errlog
+  log[#log + 1] = ("quiet, " .. key):sub(1, 300)
+  while #log > 30 do table.remove(log, 1) end
+end
+-- Every whisper from owl to owl goes through here. If the game answers "no player named ..." the owl stops
+-- writing to that friend for five minutes, and you are not shown the game's complaint about a letter you never sent.
+Owl.gone, Owl.wspAt = {}, {}
+Owl.Wsp = function(who, text)
+  if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) or type(who) ~= "string" then return false end
+  local g = Owl.gone[who]
+  if g and GetTime() - g < 300 then return false end
+  Owl.wspAt[who] = GetTime()
+  return (pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", text, "WHISPER", Owl.Addr(who)))
+end
+do
+  local pattern = nil
+  local function NotFound(_, _, msg)
+    msg = Plain(msg)
+    if type(msg) ~= "string" then return false end
+    if pattern == nil then
+      local fmt = _G.ERR_CHAT_PLAYER_NOT_FOUND_S
+      pattern = type(fmt) == "string" and ("^" .. fmt:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%s", "(.+)") .. "$") or false
+    end
+    if not pattern then return false end
+    local name = msg:match(pattern)
+    if not name then return false end
+    local first = Owl.First(name)
+    local at = Owl.wspAt[first]
+    -- only when an owl wrote to them in the last few seconds; a whisper you typed yourself still gets its answer
+    if at and GetTime() - at < 6 then
+      Owl.gone[first] = GetTime()
+      return true
+    end
+    return false
+  end
+  local add = (type(_G.ChatFrameUtil) == "table" and _G.ChatFrameUtil.AddMessageEventFilter) or _G.ChatFrame_AddMessageEventFilter
+  if type(add) == "function" then pcall(add, "CHAT_MSG_SYSTEM", NotFound) end
+end
 -- Friends. He used to look only at the game's own friends list, so a friend added through Battle.net (most are)
 -- did not count as a friend at all: no owl beside yours, no letters, no level-up notice. Owl.FL answers the same
 -- two questions the game's list does, but from both lists together.
@@ -1083,8 +1129,12 @@ local function Spot(unit)
   local what = (type(level) == "number" and level > 0) and ("level " .. level) or "level ??"
   if type(class) == "string" then what = what .. " " .. class end
   local line = theirs .. " nearby: " .. name .. ", " .. what .. "."
-  if type(level) == "number" and (level <= 0 or level - Level() >= 5) then line = line .. " Far above you. Careful."
-  elseif Q("UnitIsPVP", unit) then line = line .. " Flagged for a fight." end
+  if type(level) == "number" and (level <= 0 or level - Level() >= 5) then line = line .. " Far above you. Careful." end
+  -- where they are, as far as the game lets him tell
+  if Owl.where then
+    local okW, where = pcall(Owl.where, unit)
+    if okW and type(where) == "string" then line = line .. " " .. where elseif not okW then Owl.Oops("where the enemy is", where) end
+  end
   if Owl.onEnemy then pcall(Owl.onEnemy, name, what) end
   -- history with this one, if there is any: who has the better of whom
   if Owl.pvpNote then
@@ -1092,6 +1142,8 @@ local function Spot(unit)
     if okNote and type(note) == "string" then line = line .. note end
   end
   Say("enemy" .. name, line, 0, "uc")
+  -- his hoot goes with the words, every time he says them
+  if Owl.Hoot then local okH, errH = pcall(Owl.Hoot, "hoot") if not okH then Owl.Oops("hoot", errH) end end
 end
 Owl.Spot = Spot
 O.On("NAME_PLATE_UNIT_ADDED", Spot)
@@ -4297,7 +4349,7 @@ local function SendNews(text)
   pcall(Owl.net.Send, "NEWS", text)
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then
     for _, friend in ipairs(OwlFriends()) do
-      if not grouped[friend] then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "NEWS|" .. Name() .. "|" .. text, "WHISPER", Owl.Addr(friend)) end
+      if not grouped[friend] then Owl.Wsp(friend, "NEWS|" .. Name() .. "|" .. text) end
     end
   end
 end
@@ -8046,7 +8098,7 @@ local function SeekFriends()
         local every = (s or met[name]) and 45 or 300
         if Now() - (helloAt[name] or -1000) > every then
           helloAt[name] = Now()
-          pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "HELLO|" .. Name() .. "|" .. tostring(Level()), "WHISPER", Owl.Addr(name))
+          Owl.Wsp(name, "HELLO|" .. Name() .. "|" .. tostring(Level()))
         end
       end
     end
@@ -8086,8 +8138,9 @@ O.On("GROUP_ROSTER_UPDATE", function() dropAt = Now() + 1.5 sendLookAt = Now() +
 local netBefore = Owl.onNet
 local lookReplyAt = -100
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if friends[sender] then friends[sender].at = Now() end
+  Owl.gone[sender] = nil
   if kind == "HELLO" or kind == "HI" then
     AddFriend(sender, owl)
     if Now() - lookReplyAt > 5 then lookReplyAt = Now() sendLookAt = Now() + 1 end
@@ -8135,7 +8188,7 @@ local function SendUp()
   if Owl.net then pcall(Owl.net.Send, "UP", "") end
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then
     for who, data in pairs(friends) do
-      if data.far then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "UP|" .. Name() .. "|", "WHISPER", Owl.Addr(who)) end
+      if data.far then Owl.Wsp(who, "UP|" .. Name() .. "|") end
     end
   end
 end
@@ -8148,7 +8201,7 @@ O.On("PLAYER_LEVEL_UP", function(level)
   if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return end
   local lvl = tostring(Num(Plain(level)) or Level())
   for who, data in pairs(friends) do
-    if data.far then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "LEVEL|" .. Name() .. "|" .. lvl, "WHISPER", Owl.Addr(who)) end
+    if data.far then Owl.Wsp(who, "LEVEL|" .. Name() .. "|" .. lvl) end
   end
 end)
 -- a friend in your party can simply be looked at; one far away is down until their owl says otherwise (or four minutes pass)
@@ -8264,13 +8317,14 @@ local function PlaceFriend(f, i, w, colDown, e)
   end
   if Owl.stage and Owl.stage.Offset then
     local okS, ox, oy = pcall(Owl.stage.Offset, f, i, size, e)
-    if okS and type(ox) == "number" and type(oy) == "number" then vx, vy = vx + ox, vy + oy end
+    if okS and type(ox) == "number" and type(oy) == "number" then vx, vy = vx + ox, vy + oy
+    elseif not okS then Owl.Oops("friend owl stage", ox) end
   end
   -- when he talks he grows, and the others shuffle along to give him room
   local room = 0
   if Owl.stage and Owl.stage.Room then
     local okR, r = pcall(Owl.stage.Room, row and "left" or (colDown and "down" or "up"))
-    if okR and type(r) == "number" then room = r end
+    if okR and type(r) == "number" then room = r elseif not okR then Owl.Oops("room for the talking owl", r) end
   end
   f:SetSize(size, size)
   f:ClearAllPoints()
@@ -9150,7 +9204,7 @@ end
 local function Party(kind, extra) return Owl.net and Owl.net.Send(kind, extra) or false end
 local function Whisper(who, kind, extra)
   if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return false end
-  return (pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", kind .. "|" .. Name() .. "|" .. tostring(extra or ""), "WHISPER", Owl.Addr(who)))
+  return (Owl.Wsp(who, kind .. "|" .. Name() .. "|" .. tostring(extra or "")))
 end
 local function To(who, kind, extra) if Grouped(who) then return Party(kind, extra) end return Whisper(who, kind, extra) end
 -- friends whose owls are beside yours without a group
@@ -9615,7 +9669,7 @@ O.On("ZONE_CHANGED_NEW_AREA", function() After(3, ZonePing) end)
 O.On("PLAYER_LEVEL_UP", function() After(3, ZonePing) end)
 local netBefore = Owl.onNet
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if not On() then return end
   extra = tostring(extra or "")
   local s = Soc()
@@ -9851,7 +9905,7 @@ end
 local outbox, outAt = {}, 0
 local function Raw(who, kind, text)
   if Grouped(who) then return Owl.net and Owl.net.Send(kind, text) end
-  if C_ChatInfo and C_ChatInfo.SendAddonMessage then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", kind .. "|" .. Name() .. "|" .. text, "WHISPER", Owl.Addr(who)) end
+  if C_ChatInfo and C_ChatInfo.SendAddonMessage then Owl.Wsp(who, kind .. "|" .. Name() .. "|" .. text) end
 end
 -- who == nil means every friend's owl in reach
 local function Out(who, kind, text)
@@ -10232,7 +10286,7 @@ end
 
 local netBefore = Owl.onNet
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if not On() then return end
   extra = tostring(extra or "")
   if kind == "HELLO" or kind == "HI" or kind == "LEVEL" then
@@ -11174,7 +11228,7 @@ local function Tell(zone, kind)
   if Owl.net then pcall(Owl.net.Send, "WX", text) end
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then
     for who, data in pairs(Owl.cos and Owl.cos.friends or {}) do
-      if data.far then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "WX|" .. Name() .. "|" .. text, "WHISPER", Owl.Addr(who)) end
+      if data.far then Owl.Wsp(who, "WX|" .. Name() .. "|" .. text) end
     end
   end
 end
@@ -11270,7 +11324,7 @@ end
 Owl.wxHeard = {}
 local netBefore = Owl.onNet
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if kind ~= "WX" or type(extra) ~= "string" then return end
   local zone, what = extra:match("^(.-);(%a+)$")
   if not zone or zone == "" then return end
@@ -11741,7 +11795,7 @@ end
 
 local netBefore = Owl.onNet
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if kind == "HELLO" or kind == "HI" then
     Later(2, function() Banter(sender, owl) end)
   elseif kind == "AWD" and type(extra) == "string" then
@@ -12102,7 +12156,7 @@ local function SendCatch(who)
   if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return end
   if cpAt[who] and Now() - cpAt[who] < 600 then return end
   cpAt[who] = Now()
-  pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "CP|" .. Name() .. "|" .. line, "WHISPER", Owl.Addr(who))
+  Owl.Wsp(who, "CP|" .. Name() .. "|" .. line)
 end
 O.commands.catchphrase = function(arg, raw)
   local text = (type(raw) == "string" and raw ~= "" and raw or arg or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -12118,7 +12172,7 @@ O.commands.catchphrase = function(arg, raw)
 end
 local netBefore = Owl.onNet
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if kind == "HELLO" or kind == "HI" then SendCatch(sender)
   elseif kind == "CP" and type(extra) == "string" and friends[sender] then
     local line = extra:gsub("[|;%c]", ""):sub(1, 40)
@@ -12716,7 +12770,7 @@ local friends = Owl.cos.friends
 local function Clean(text, limit) return (tostring(text):gsub("[|;%c]", ""):sub(1, limit)) end
 local function Whisper(who, kind, extra)
   if OwlHUDDB.social == false or not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return false end
-  return (pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", kind .. "|" .. Name() .. "|" .. tostring(extra or ""), "WHISPER", Owl.Addr(who)))
+  return (Owl.Wsp(who, kind .. "|" .. Name() .. "|" .. tostring(extra or "")))
 end
 local function Gold(copper)
   copper = math.floor(Num(copper) or 0)
@@ -12907,7 +12961,7 @@ end
 local netBefore = Owl.onNet
 local seenTrick, seenPost = {}, {}
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if kind == "HELLO" or kind == "HI" then
     Tell(sender)
   elseif kind == "FLK" and type(extra) == "string" then
@@ -13256,14 +13310,14 @@ end
 -- ---------- page 5: ask him (everything you used to type) ----------
 local GROUPS = {
   { "Your owl", { "wardrobe", "goals", "quirks", "bond", "pat", "dance", "five", "collection", "lanterns", "torches", "ask", "reading" } },
-  { "Friends", { "pals", "party", "readyall", "hootoff", "gift", "where", "notes", "rival", "foes", "lfg", "awards" } },
+  { "Friends", { "pals", "party", "readyall", "hootoff", "gift", "where", "map", "notes", "rival", "foes", "lfg", "awards" } },
   { "You", { "me", "journal", "stats", "recap", "records", "yearbook", "family", "gold", "worth", "rep", "mana" } },
   { "Quests and travel", { "quests", "route", "needs", "plan", "hunt", "flights", "pull", "tip" } },
-  { "Show off", { "show dance", "show bow", "show spin", "show cheer", "show wave", "enter", "rain" } },
+  { "Show off", { "show dance", "show bow", "show spin", "show cheer", "show wave", "hoot", "enter", "rain" } },
   { "Tools", { "unlock", "owl", "report" } },
 }
-local EXTRA_LABEL = { foes = "Enemy players seen", reading = "His reading of you", awards = "Dungeon awards now", recap = "Session recap", ["show dance"] = "Dance, for all to see", ["show bow"] = "Bow",
-  ["show spin"] = "Spin", ["show cheer"] = "Cheer", ["show wave"] = "Wave", enter = "Replay entrances", rain = "Umbrellas (pretend rain)" }
+local EXTRA_LABEL = { map = "Where friends are", foes = "Enemy players seen", reading = "His reading of you", awards = "Dungeon awards now", recap = "Session recap", ["show dance"] = "Dance, for all to see", ["show bow"] = "Bow",
+  ["show spin"] = "Spin", ["show cheer"] = "Cheer", ["show wave"] = "Wave", hoot = "Hear his hoot", enter = "Replay entrances", rain = "Umbrellas (pretend rain)" }
 local STAYS = { pat = true, report = true, dance = true, five = true, enter = true, rain = true, reading = true, show = true }
 local function Rows(page, count, width, x0, y0, cols)
   local list = {}
@@ -13388,6 +13442,9 @@ local STAGE_OPTIONS = {
   { "Owls trade a line on grouping", "bantertoggle", function() return OwlHUDDB.banter ~= false end },
   { "Friends in a row, not a column", "branch", function() return OwlHUDDB.friendRow == true end },
   { "Class-coloured scarves", "scarftoggle", function() return OwlHUDDB.classScarf ~= false end },
+  { "Show me on friends' maps", "maptoggle", function() return OwlHUDDB.shareSpot ~= false end },
+  { "His hoot for enemy players", "hootstoggle", function() return OwlHUDDB.hoots ~= false end },
+  { "Music behind his hoot", "hootmusic", function() return OwlHUDDB.hootMusic ~= false end },
   { "Name plates on friends' owls", "cardstoggle", function() return OwlHUDDB.friendCards ~= false end },
 }
 local function BuildSettings(page)
@@ -13585,6 +13642,95 @@ local seen, order = {}, {}            -- by name: { at, level, class, zone, by }
 local told, toldAt, burst = {}, -100, {}
 local stats = { scans = 0, mine = 0, heard = 0, sent = 0, threats = 0, targetRead = "untested", focus = "untested", partyTargets = 0 }
 local function Clean(text, limit) return (tostring(text or ""):gsub("[|;%c]", ""):sub(1, limit)) end
+-- Where an enemy is. The game gives no positions for enemies, so this is pieced together from two things it does
+-- show: where their nameplate sits on your screen (left, right or ahead of where you are LOOKING), and a few
+-- how-close-are-they checks that give a band of yards. Anything it cannot tell, it leaves out.
+local whereStats = { plateApi = "untested", center = "untested", interact = "untested", item = "untested", said = 0 }
+local RANGE_ITEMS = { { 5, 37727 }, { 8, 34368 }, { 10, 32321 }, { 15, 33069 }, { 20, 10645 }, { 25, 24268 }, { 30, 835 }, { 35, 24269 }, { 40, 28767 } }
+local function Side(unit)
+  local np = _G.C_NamePlate
+  if type(np) ~= "table" or not np.GetNamePlateForUnit then whereStats.plateApi = "missing" return nil, false end
+  local ok, plate = pcall(np.GetNamePlateForUnit, unit)
+  whereStats.plateApi = ok and "ok" or "error"
+  if not ok or type(plate) ~= "table" or not plate.GetCenter then return nil, false end
+  local okC, cx = pcall(plate.GetCenter, plate)
+  cx = okC and Plain(cx) or nil
+  local scale = Num(Plain(plate:GetEffectiveScale())) or 1
+  local sw = (Num(Plain(UIParent:GetWidth())) or 0) * (Num(Plain(UIParent:GetEffectiveScale())) or 1)
+  if type(cx) ~= "number" or sw <= 0 then whereStats.center = okC and "unreadable" or "error" return nil, true end
+  whereStats.center = "ok"
+  local at = cx * scale / sw
+  if at < 0.4 then return "to your left", true end
+  if at > 0.6 then return "to your right", true end
+  return "ahead of you", true
+end
+local function Yards(unit)
+  if (type(_G.InCombatLockdown) == "function" and _G.InCombatLockdown()) or Plain(UnitAffectingCombat("player")) == true then whereStats.inFight = (whereStats.inFight or 0) + 1 return nil end
+  local near, far = nil, nil        -- closer than `near`, further than `far`
+  local function mark(yd, inside)
+    if inside == true then if not near or yd < near then near = yd end
+    elseif inside == false then if not far or yd > far then far = yd end end
+  end
+  -- the game's own "close enough to duel / to inspect" checks
+  if type(_G.CheckInteractDistance) == "function" then
+    for _, c in ipairs({ { 3, 10 }, { 2, 11 }, { 4, 28 } }) do
+      local ok, v = pcall(_G.CheckInteractDistance, unit, c[1])
+      v = ok and Plain(v) or nil
+      if v == true or v == 1 then mark(c[2], true) whereStats.interact = "ok" elseif ok and (v == false or v == nil or v == 0) then mark(c[2], false) if whereStats.interact == "untested" then whereStats.interact = "answers" end
+      elseif not ok then whereStats.interact = "refused" end
+    end
+  end
+  -- "is this item in reach of them": a ladder of known ranges
+  local fn = (C_Item and C_Item.IsItemInRange) or _G.IsItemInRange
+  if type(fn) == "function" then
+    for _, r in ipairs(RANGE_ITEMS) do
+      local ok, v = pcall(fn, r[2], unit)
+      v = ok and Plain(v) or nil
+      if v == true or v == 1 then mark(r[1], true) whereStats.item = "ok" elseif v == false or v == 0 then mark(r[1], false) whereStats.item = "ok" elseif not ok then whereStats.item = "refused" end
+    end
+  end
+  if near and far and far < near then return "about " .. far .. " to " .. near .. " yards" end
+  if near then return "within " .. near .. " yards" end
+  if far then return "more than " .. far .. " yards off" end
+  return nil
+end
+Owl.where = function(unit)
+  if OwlHUDDB.foeWhere == false then return nil end
+  local side, onScreen = Side(unit)
+  local yards = Yards(unit)
+  -- targeted (by you or your group) but with no nameplate on screen: they are somewhere you are not looking
+  if not side and not onScreen and whereStats.plateApi == "ok" and not tostring(unit):find("^nameplate") then side = "out of your view, likely behind you" end
+  if not side and not yards then return nil end
+  whereStats.said = whereStats.said + 1
+  local out = side and (side:sub(1, 1):upper() .. side:sub(2)) or nil
+  if out and yards then out = out .. ", " .. yards elseif yards then out = yards:sub(1, 1):upper() .. yards:sub(2) end
+  return out .. "."
+end
+-- his own voice for it: hoo-hooo when an enemy player is about, a quick high three when one has you targeted,
+-- one low note when the news comes from a friend's owl
+O.defaults.hoots = true
+local hootAt = -100
+Owl.Hoot = function(kind, force)
+  if not force and (not OwlHUDDB.sound or OwlHUDDB.hoots == false) then return false end
+  if not force and Now() - hootAt < 6 then return false end
+  if type(PlaySoundFile) ~= "function" then return false end
+  hootAt = Now()
+  -- with a few dark bars of music under it, unless he has been told to hoot plain
+  local music = OwlHUDDB.hootMusic ~= false
+  if music and not force and (kind or "hoot") == "hoot" then
+    if stats.tuneAt and Now() - stats.tuneAt < 45 then music = false else stats.tuneAt = Now() end
+  end
+  local file = (kind or "hoot") .. (music and "_m" or "")
+  local ok, played = pcall(PlaySoundFile, MEDIA .. file .. ".ogg", "Master")
+  -- if the game will not play the one with music (it has not found the file yet), the plain hoot is better than silence
+  if not (ok and played) and file ~= (kind or "hoot") then
+    file = kind or "hoot"
+    ok, played = pcall(PlaySoundFile, MEDIA .. file .. ".ogg", "Master")
+  end
+  stats.hootTries = (stats.hootTries or 0) + 1
+  stats.hoot = ((ok and played) and "played " or (ok and "refused " or "error ")) .. file
+  return ok and played and true or false
+end
 local function On()
   if not (OwlHUDDB.sense and OwlHUDDB.tips) then return false end
   local inside, kind = Q("IsInInstance")
@@ -13594,8 +13740,9 @@ local function Enemy(unit)
   if not Q("UnitExists", unit) or not Q("UnitIsPlayer", unit) then return nil end
   local mine, theirs = Q("UnitFactionGroup", "player"), Q("UnitFactionGroup", unit)
   if type(mine) ~= "string" or type(theirs) ~= "string" or mine == theirs then return nil end
+  -- some enemies' names cannot be read; they still count
   local name = Plain(UnitName(unit))
-  return type(name) == "string" and name ~= "" and name or nil
+  return type(name) == "string" and name ~= "" and name or "Someone"
 end
 local function Note(name, level, class, zone, by)
   local e = seen[name]
@@ -13627,7 +13774,7 @@ local function Share(name, level, class)
   if Owl.net then pcall(Owl.net.Send, "FOE", line) end
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then
     for who, data in pairs(friends) do
-      if data.far and not data.leaving then pcall(C_ChatInfo.SendAddonMessage, "OwlHUD", "FOE|" .. Name() .. "|" .. line, "WHISPER", Owl.Addr(who)) end
+      if data.far and not data.leaving then Owl.Wsp(who, "FOE|" .. Name() .. "|" .. line) end
     end
   end
   stats.sent = stats.sent + 1
@@ -13638,7 +13785,7 @@ local function Look(unit, viaGroup)
   if not name then return end
   local level, class = Plain(UnitLevel(unit)), Plain((UnitClass(unit)))
   local fresh = Note(name, type(level) == "number" and level or nil, type(class) == "string" and class or nil, Zone(), nil)
-  if fresh then stats.mine = stats.mine + 1 Share(name, level, class) end
+  if fresh then stats.mine = stats.mine + 1 if name ~= "Someone" then Share(name, level, class) end end
   if Owl.Spot then pcall(Owl.Spot, unit) end
   -- is this one looking at you?
   local onYou = Q("UnitIsUnit", unit .. "target", "player")
@@ -13649,7 +13796,11 @@ local function Look(unit, viaGroup)
     if (not threatAt[name] or now - threatAt[name] > 90) and now - (stats.lastThreat or -100) > 15 and Plain(UnitAffectingCombat("player")) ~= true then
       threatAt[name], stats.lastThreat = now, now
       stats.threats = stats.threats + 1
-      Say("threat" .. name, { name .. " has you targeted. " .. What(level, class):sub(1, 1):upper() .. What(level, class):sub(2) .. ".", "Eyes up. " .. name .. " is looking right at you." }, 0, "uc")
+      hootAt = -100
+      Owl.Hoot("hoot_alarm")
+      local okWhere, where = pcall(Owl.where, unit)
+      if not okWhere then Owl.Oops("where the enemy is", where) where = nil end
+      Say("threat" .. name, name .. " has you targeted. " .. What(level, class):sub(1, 1):upper() .. What(level, class):sub(2) .. "." .. (where and (" " .. where) or ""), 0, "uc")
       if Owl.cos.Idle then pcall(Owl.cos.Idle, "startle", 0.8) end
     end
   end
@@ -13683,7 +13834,7 @@ end)
 local heardAt = -100
 local netBefore = Owl.onNet
 Owl.onNet = function(kind, sender, owl, extra)
-  if netBefore then pcall(netBefore, kind, sender, owl, extra) end
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
   if kind ~= "FOE" or type(extra) ~= "string" or not friends[sender] or OwlHUDDB.sense == false then return end
   local name, level, class, zone = extra:match("^([^;]+);(%d+);([^;]*);(.+)$")
   if not name then return end
@@ -13695,6 +13846,7 @@ Owl.onNet = function(kind, sender, owl, extra)
   if mineToo or not On() then return end
   if zone == Zone() and Now() - heardAt > 20 then
     heardAt = Now()
+    Owl.Hoot("hoot_soft")
     Say("foeheard" .. name, tostring(owl) .. " just saw an enemy near you: " .. name .. ", " .. What(level, class) .. ". " .. sender .. " is in " .. zone .. " too.", 0, "uc")
     if Owl.stage and Owl.stage.Speak then pcall(Owl.stage.Speak, sender, "Enemy!", 2) end
   end
@@ -13709,10 +13861,30 @@ O.On("ZONE_CHANGED_NEW_AREA", function()
   if best then
     local e = seen[best]
     local mins = math.floor((Now() - e.at) / 60)
+    Owl.Hoot("hoot_soft")
     Say("foezone" .. zone, "Careful here. " .. e.by .. "'s owl saw " .. best .. ", " .. What(e.level, e.class) .. ", " .. (mins < 1 and "a moment ago." or (mins .. " min ago.")), 600)
   end
 end)
 
+O.commands.hoot = function(arg)
+  if arg == "off" or arg == "on" then
+    OwlHUDDB.hoots = arg == "on"
+    O.Print("his hoot for enemy players" .. (OwlHUDDB.hoots and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+    return
+  end
+  if arg == "music" then
+    OwlHUDDB.hootMusic = OwlHUDDB.hootMusic == false
+    O.Print("music behind his hoot" .. (OwlHUDDB.hootMusic and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+    return
+  end
+  -- hear them: the sighting, then the alarm, then the soft one
+  local kinds = { alarm = "hoot_alarm", soft = "hoot_soft" }
+  local played = Owl.Hoot(kinds[arg or ""] or "hoot", true)
+  if not played then O.Print("the game would not play his hoot. If you only just updated, close the game completely and start it again: it only finds new sound files when it starts.")
+  else O.Print("that is his " .. ((arg == "alarm" and "alarm: an enemy has you targeted") or (arg == "soft" and "soft note: news from a friend's owl") or "hoot: an enemy player is about") .. ".  Also: /owl hoot alarm, /owl hoot soft, /owl hoot music, /owl hoot off") end
+end
+O.commands.hootmusic = function() O.commands.hoot("music") end
+O.commands.hootstoggle = function() O.commands.hoot(OwlHUDDB.hoots == false and "on" or "off") end
 O.commands.foes = function(arg)
   if arg == "share" then
     OwlHUDDB.shareFoes = OwlHUDDB.shareFoes == false
@@ -13736,6 +13908,230 @@ Owl.probe.watch = function()
   local n = 0
   for _ in pairs(seen) do n = n + 1 end
   return "on=" .. tostring(On()) .. " scans=" .. stats.scans .. " seenByMe=" .. stats.mine .. " heardFromFriends=" .. stats.heard .. " shared=" .. stats.sent .. " inList=" .. n
-    .. " threats=" .. stats.threats .. " canReadTheirTarget=" .. stats.targetRead .. " focusUnit=" .. stats.focus .. " partyTargetsSeen=" .. stats.partyTargets
+    .. " threats=" .. stats.threats .. " canReadTheirTarget=" .. stats.targetRead .. " focusUnit=" .. stats.focus .. " partyTargetsSeen=" .. stats.partyTargets .. " hoot=" .. tostring(stats.hoot) .. " hootTries=" .. tostring(stats.hootTries or 0) .. " soundOn=" .. tostring(OwlHUDDB.sound) .. " hootsOn=" .. tostring(OwlHUDDB.hoots ~= false)
+    .. " | where: plateApi=" .. whereStats.plateApi .. " plateOnScreen=" .. whereStats.center .. " closeChecks=" .. whereStats.interact .. " itemRange=" .. whereStats.item .. " told=" .. whereStats.said
 end
+end
+
+-- =====================================================================================
+-- Friends on the map. The game only marks people in your group; here each owl tells its friends' owls where its
+-- player is standing, and they are drawn on the world map as small owls. Only between friends, and only if you let it.
+-- =====================================================================================
+do
+local friends = Owl.cos.friends
+local spots = {}                      -- by friend: { map, x, y, zone, level, at }
+local stats = { sent = 0, heard = 0, drawn = 0, mine = "untested", canvas = "untested", rect = "untested", lastErr = nil }
+O.defaults.shareSpot = true
+local function Clean(text, limit) return (tostring(text or ""):gsub("[|;%c]", ""):sub(1, limit)) end
+local function MySpot()
+  if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetPlayerMapPosition) then stats.mine = "no map API" return nil end
+  local map = Num(Plain(C_Map.GetBestMapForUnit("player")))
+  if not map then stats.mine = "no map" return nil end
+  local ok, pos = pcall(C_Map.GetPlayerMapPosition, map, "player")
+  if not ok or not pos then stats.mine = ok and "hidden here" or "error" return map, nil, nil end
+  local x, y
+  if type(pos) == "table" and pos.GetXY then local okX, a, b = pcall(pos.GetXY, pos) if okX then x, y = a, b end end
+  if not x and type(pos) == "table" then x, y = pos.x, pos.y end
+  x, y = Num(Plain(x)), Num(Plain(y))
+  if not x or not y or (x == 0 and y == 0) then stats.mine = "hidden here" return map, nil, nil end
+  stats.mine = "ok"
+  return map, x, y
+end
+
+-- ---------- telling them ----------
+local lastSent = { at = -100, map = nil, x = 0, y = 0 }
+local function Tell(force)
+  if OwlHUDDB.shareSpot == false or OwlHUDDB.social == false then return end
+  if not (C_ChatInfo and C_ChatInfo.SendAddonMessage) then return end
+  local any = false
+  for _, data in pairs(friends) do if data.far and not data.leaving then any = true break end end
+  if not any then return end
+  local map, x, y = MySpot()
+  if not map then return end
+  local now = Now()
+  local moved = map ~= lastSent.map or (x and (math.abs(x - lastSent.x) > 0.004 or math.abs(y - lastSent.y) > 0.004))
+  if not force and not ((moved and now - lastSent.at >= 6) or now - lastSent.at >= 30) then return end
+  lastSent.at, lastSent.map, lastSent.x, lastSent.y = now, map, x or 0, y or 0
+  local line = map .. ";" .. math.floor((x or 0) * 10000 + 0.5) .. ";" .. math.floor((y or 0) * 10000 + 0.5) .. ";" .. Level() .. ";" .. Clean(Zone(), 40)
+  for who, data in pairs(friends) do
+    -- people in your group are already on your map, so only the ones further off need telling
+    if data.far and not data.leaving then
+      Owl.Wsp(who, "POS|" .. Name() .. "|" .. line)
+      stats.sent = stats.sent + 1
+    end
+  end
+end
+
+-- ---------- hearing them ----------
+local netBefore = Owl.onNet
+Owl.onNet = function(kind, sender, owl, extra)
+  if netBefore then local okNet, errNet = pcall(netBefore, kind, sender, owl, extra) if not okNet then Owl.Oops("message " .. tostring(kind), errNet) end end
+  if kind == "HELLO" or kind == "HI" then lastSent.at = -100 return end
+  if kind ~= "POS" or type(extra) ~= "string" or not friends[sender] then return end
+  local map, x, y, level, zone = extra:match("^(%d+);(%d+);(%d+);(%d+);(.*)$")
+  if not map then return end
+  x, y = tonumber(x) / 10000, tonumber(y) / 10000
+  if x > 1 or y > 1 then return end
+  stats.heard = stats.heard + 1
+  spots[sender] = { map = tonumber(map), x = x, y = y, level = tonumber(level), zone = Clean(zone, 40), owl = tostring(owl), at = Now(), known = (x > 0 or y > 0) }
+end
+
+-- ---------- drawing them ----------
+local pins, holder = {}, nil
+local function Canvas()
+  local wm = _G.WorldMapFrame
+  if type(wm) ~= "table" then stats.canvas = "no world map" return nil end
+  local c = (type(wm.ScrollContainer) == "table" and wm.ScrollContainer.Child) or (wm.GetCanvas and select(2, pcall(wm.GetCanvas, wm))) or nil
+  if type(c) ~= "table" or not c.GetWidth then stats.canvas = "no canvas" return nil end
+  stats.canvas = "ok"
+  return c, wm
+end
+local function Pin(i, canvas)
+  local p = pins[i]
+  if p then return p end
+  p = CreateFrame("Frame", nil, canvas)
+  p:SetSize(30, 30)
+  if p.SetFrameStrata then p:SetFrameStrata("HIGH") end
+  p.back = p:CreateTexture(nil, "BACKGROUND")
+  p.back:SetTexture(MEDIA .. "gem_white.tga")
+  p.back:SetAllPoints(p)
+  if p.back.SetVertexColor then p.back:SetVertexColor(0.0, 0.02, 0.09, 0.85) end
+  p.owl = p:CreateTexture(nil, "ARTWORK")
+  p.owl:SetPoint("CENTER", p, "CENTER", 0, 1)
+  p.owl:SetSize(26, 26)
+  p.name = p:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  p.name:SetPoint("TOP", p, "BOTTOM", 0, 1)
+  if p.EnableMouse then
+    p:EnableMouse(true)
+    p:SetScript("OnEnter", function(self)
+      local tip, s = _G.GameTooltip, spots[self.who or ""]
+      if type(tip) ~= "table" or not tip.SetOwner or not s then return end
+      tip:SetOwner(self, "ANCHOR_RIGHT")
+      tip:AddLine(tostring(self.who) .. (s.level and (", level " .. s.level) or ""), 1, 0.82, 0)
+      tip:AddLine(tostring(s.owl) .. " is with them in " .. tostring(s.zone) .. ".", 1, 1, 1)
+      local age = math.floor(Now() - s.at)
+      tip:AddLine(age < 15 and "Just now." or ("Last heard " .. age .. " seconds ago."), 0.7, 0.7, 0.7)
+      tip:Show()
+    end)
+    p:SetScript("OnLeave", function() local tip = _G.GameTooltip if type(tip) == "table" and tip.Hide then tip:Hide() end end)
+  end
+  pins[i] = p
+  return p
+end
+-- where a spot on their zone's map falls on the map you have open (the same zone, or a continent that holds it)
+local function OnShown(spot, shown)
+  if spot.map == shown then return spot.x, spot.y end
+  if not (C_Map and C_Map.GetMapRectOnMap) then stats.rect = "no API" return nil end
+  local ok, minX, maxX, minY, maxY = pcall(C_Map.GetMapRectOnMap, spot.map, shown)
+  minX, maxX, minY, maxY = Num(Plain(minX)), Num(Plain(maxX)), Num(Plain(minY)), Num(Plain(maxY))
+  if not ok or not minX or not maxX or not minY or not maxY or maxX <= minX or maxY <= minY then stats.rect = ok and "not on this map" or "error" return nil end
+  stats.rect = "ok"
+  local x, y = minX + spot.x * (maxX - minX), minY + spot.y * (maxY - minY)
+  if x < 0 or x > 1 or y < 0 or y > 1 then return nil end
+  return x, y
+end
+local function Draw()
+  local canvas, wm = Canvas()
+  if not canvas then return end
+  local shown = wm.GetMapID and Num(Plain(select(2, pcall(wm.GetMapID, wm)))) or nil
+  local w, h = Num(canvas:GetWidth()) or 0, Num(canvas:GetHeight()) or 0
+  local scale = Num(canvas.GetScale and canvas:GetScale()) or 1
+  local n = 0
+  if shown and w > 0 and h > 0 and OwlHUDDB.friendPins ~= false then
+    local names = {}
+    for who in pairs(spots) do names[#names + 1] = who end
+    table.sort(names)
+    for _, who in ipairs(names) do
+      local s = spots[who]
+      local age = Now() - s.at
+      if friends[who] and s.known and age < 240 then
+        local x, y = OnShown(s, shown)
+        if x then
+          n = n + 1
+          local p = Pin(n, canvas)
+          p.who = who
+          -- the same size on screen however far the map is zoomed
+          if p.SetScale and scale > 0 then p:SetScale(1 / scale) end
+          p:ClearAllPoints()
+          p:SetPoint("CENTER", canvas, "TOPLEFT", x * w * scale, -y * h * scale)
+          local look = friends[who].look
+          local plume = type(look) == "table" and type(look.body) == "table" and look.body.p or nil
+          p.owl:SetTexture(MEDIA .. Owl.cos.OwlFile("owl.tga", plume))
+          p.name:SetText(who)
+          if p.SetAlpha then p:SetAlpha(age < 60 and 1 or 0.5) end
+          p:Show()
+        end
+      end
+    end
+  end
+  for i = n + 1, #pins do pins[i]:Hide() end
+  stats.drawn = n
+end
+
+local acc, drawAcc = 0, 0
+local ticker = CreateFrame("Frame")
+ticker:SetScript("OnUpdate", function(_, e)
+  acc, drawAcc = acc + e, drawAcc + e
+  if acc >= 2 then acc = 0 O.Try("owl map tell", Tell) end
+  if drawAcc >= 0.4 then
+    drawAcc = 0
+    local wm = _G.WorldMapFrame
+    if type(wm) == "table" and wm.IsShown and wm:IsShown() then
+      local ok, err = pcall(Draw)
+      if not ok then stats.lastErr = tostring(err) Owl.Oops("friends on the map", err) end
+    end
+  end
+end)
+
+O.commands.map = function(arg)
+  if arg == "off" or arg == "on" then
+    OwlHUDDB.shareSpot = arg == "on"
+    O.Print("showing you on your friends' maps" .. (OwlHUDDB.shareSpot and ": |cff40ff40on|r" or ": |cffff4040off|r"))
+    if OwlHUDDB.shareSpot then lastSent.at = -100 end
+    return
+  end
+  O.Print("|cffffd100Where your friends are|r")
+  local any = false
+  for who, s in pairs(spots) do
+    if friends[who] then
+      any = true
+      local age = math.floor(Now() - s.at)
+      print("  " .. who .. ": " .. tostring(s.zone) .. (s.known and (" (" .. math.floor(s.x * 100) .. ", " .. math.floor(s.y * 100) .. ")") or ", inside somewhere") .. ", " .. (age < 15 and "just now" or (age .. " s ago")))
+    end
+  end
+  if not any then print("  Nobody yet. Friends show here, and as owls on your world map, once they are on this version and not in your group.") end
+  print("  /owl map off stops your owl telling them where you are.")
+end
+O.commands.maptoggle = function() O.commands.map(OwlHUDDB.shareSpot == false and "on" or "off") end
+Owl.probe = Owl.probe or {}
+Owl.probe.map = function()
+  local known = 0
+  for _ in pairs(spots) do known = known + 1 end
+  return "sharing=" .. tostring(OwlHUDDB.shareSpot ~= false) .. " myPosition=" .. stats.mine .. " sent=" .. stats.sent .. " heard=" .. stats.heard .. " friendsKnown=" .. known
+    .. " worldMap=" .. stats.canvas .. " pinsDrawn=" .. stats.drawn .. " zoneOnBiggerMap=" .. stats.rect .. (stats.lastErr and (" drawError=" .. stats.lastErr) or "")
+end
+end
+
+-- once after each update: a few lines on what is new, so nobody has to read a web page to find out
+do
+local NEWS = {
+  "Click your owl: everything he does is in one menu now.",
+  "Friends with owls show on your world map, grouped or not.",
+  "He hoots, and says where they are, when an enemy player is near.",
+  "Whispers get reply buttons that fit what was said.",
+}
+local shown = false
+O.On("PLAYER_ENTERING_WORLD", function()
+  if shown then return end
+  shown = true
+  local before = Num(OwlHUDDB.seenVersion)
+  OwlHUDDB.seenVersion = O.VERSION
+  if before == O.VERSION then return end
+  -- someone meeting him for the first time gets his reading instead, not a list of changes
+  local rec = Owl.Record()
+  if not before and (Num(rec.sessions) or 0) <= 2 then return end
+  if C_Timer and C_Timer.After and Owl.stage and Owl.stage.Notice then
+    C_Timer.After(10, function() O.Try("owl news", function() Owl.stage.Notice("New in OwlHUD " .. tostring(O.VERSION_TEXT), NEWS, 12) end) end)
+  end
+end)
 end

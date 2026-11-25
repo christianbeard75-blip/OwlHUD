@@ -2,7 +2,7 @@
 
 A talking owl companion for **World of Warcraft: Forever**. He sits on your screen, watches what you do, remembers it, and helps. He has a wardrobe, goals of his own, and he knows your friends' owls.
 
-**Current version: 3.9**
+**Current version: 4.1**
 
 ## Get it
 
@@ -32,7 +32,20 @@ Whenever there is a new version:
 
 That is all. It fetches the newest version from this page and puts it in the right place.
 
-## What is new in 3.9
+## What is new in 4.1
+
+- **Friends on the map.** Friends who run OwlHUD show up on your world map as small owls, grouped or not. Point at one for their name, level and zone. `/owl map` lists where everyone is, `/owl map off` stops your owl sharing where you are.
+- **He says where an enemy is**, when the game lets him tell: left, right or ahead, and a rough number of yards.
+- His hoots now come with a short music-box tune.
+- After an update he tells you what is new, once.
+- Fixes: no more "No player named ..." lines in chat when a friend logs off, and his distance checks no longer run during a fight.
+
+## Earlier, in 4.0
+
+- **He hoots.** A hoo-hooo when an enemy player shows up, a quick high three when one has you targeted, and one low note when the news comes from a friend's owl. A few dark bars of music play under each one. `/owl hoot` plays it, `/owl hoot music` drops the music, `/owl hoot off` silences it.
+- This version adds sound files, so **close the game completely and start it again** after updating.
+
+## Earlier, in 3.9
 
 - **A sharper lookout for enemy players.** He now checks your focus and whoever your group is targeting as well as nameplates, your target and your pointer.
 - **"He has you targeted."** A warning the moment an enemy player picks you as their target.
@@ -90,6 +103,8 @@ The game only lets an addon see players it is already showing you (about 40 yard
 | Type this | What it does |
 | --- | --- |
 | `/owl` | Everything he can do |
+| `/owl map` | Where your friends are |
+| `/owl hoot` | Hear his hoot |
 | `/owl foes` | Enemy players seen lately, by you or a friend's owl |
 | `/owl board` | The Flock leaderboard and weekly challenge |
 | `/owl post` | Send a letter by owl, or read yours |
